@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>轩辕剑 · 道具工坊</title><link rel="stylesheet" href="/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/controls/OrbitControls.js":"/vendor/OrbitControls.js"}}</script>
+</head>
+<body>
+  <a href="#properties" class="skip">跳到道具属性</a>
+  <header>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">轩</span><div><h1>道具工坊</h1><p>轩辕剑网络版 / 本地内容编辑器</p></div></div>
+    <div class="header-actions"><span class="tag">本地工作区</span><button id="open-settings" aria-expanded="false" aria-controls="settings-panel">设置</button><button id="export" class="primary" disabled>导出双端补丁 <span aria-hidden="true">↗</span></button></div>
+  </header>
+  <nav class="library-switch" aria-label="内容类型"><button id="library-items" aria-pressed="true">道具</button><button id="library-creatures" aria-pressed="false">NPC与怪物</button><span id="creature-availability-note" class="muted">NPC与怪物仅供查看</span></nav>
+  <div id="status" role="status" aria-live="polite">正在读取道具与本地基线…</div>
+  <section id="settings-panel" class="settings-panel" aria-labelledby="settings-title" hidden>
+    <div class="settings-heading"><div><h2 id="settings-title" tabindex="-1">数据源设置</h2><p class="muted">自定义读取位置。校验通过后才能保存，游戏原文件保持只读。</p></div><button id="settings-close">返回工坊</button></div>
+    <p id="settings-message" role="status" aria-live="polite">正在读取配置…</p>
+    <form id="settings-form">
+      <fieldset><legend>游戏文件</legend><div id="settings-path-basic" class="settings-grid"></div><details class="settings-advanced"><summary>单独指定物件表与资源目录</summary><p class="property-note">留空时从客户端根目录定位 Main、Act、MODEL、TEX 和 Tsw。可填写本机路径或已登录的共享路径。</p><div id="settings-path-advanced" class="settings-grid"></div></details></fieldset>
+      <fieldset><legend>NPC与地图数据</legend><label for="setting-npc-mode">数据来源</label><select id="setting-npc-mode"><option value="offline">离线快照（不要求数据库在线）</option><option value="database">从数据库生成本地快照</option></select><p class="property-note">数据库模式在校验时读取两张 NPC 表并生成快照；浏览时仍使用本地快照。离线模式使用快照内的地图名称。</p><div id="settings-npc-paths" class="settings-grid"></div></fieldset>
+      <fieldset id="settings-database-fields"><legend>数据库连接</legend><div class="settings-grid">
+        <div class="setting-field"><label for="setting-db-transport">连接方式</label><select id="setting-db-transport"><option value="tcp">TCP（本机或服务器）</option><option value="pipe">本机 Windows 命名管道</option></select></div>
+        <div class="setting-field"><label for="setting-db-host">主机</label><input id="setting-db-host" maxlength="253" autocomplete="off"></div>
+        <div class="setting-field" id="settings-tcp-port"><label for="setting-db-port">端口</label><input id="setting-db-port" type="number" min="1" max="65535"></div>
+        <div class="setting-field" id="settings-pipe-row" hidden><label for="setting-db-pipe">命名管道名称</label><input id="setting-db-pipe" maxlength="100" autocomplete="off"></div>
+        <div class="setting-field"><label for="setting-db-name">数据库名</label><input id="setting-db-name" maxlength="64" autocomplete="off"></div>
+        <div class="setting-field"><label for="setting-db-user">数据库账号</label><input id="setting-db-user" maxlength="256" autocomplete="off"></div>
+        <div class="setting-field"><label for="settings-password">密码</label><input id="settings-password" type="password" maxlength="4096" autocomplete="off"></div>
+        <div class="setting-field"><label for="setting-db-timeout">连接超时（秒）</label><input id="setting-db-timeout" type="number" min="1" max="15"></div>
+        <div class="setting-field"><label for="setting-db-client">兼容 MySQL 客户端 mysql.exe</label><input id="setting-db-client" maxlength="4096" autocomplete="off"><p class="property-note">当前核验 MySQL 4.0.27 原工具客户端，其他版本会明确拒绝执行。</p></div>
+      </div><label class="filter"><input type="checkbox" id="settings-remember">使用 Windows 保护保存密码</label><p class="property-note">密码绑定当前 Windows 用户，导出不含密码；换机后重新输入。</p></fieldset>
+      <div class="settings-actions"><button id="settings-validate" type="submit">校验配置</button><button id="settings-save" type="button" class="primary" disabled>保存并应用</button><button id="settings-export" type="button">导出已保存配置</button><button id="settings-import-button" type="button">导入配置</button><input id="settings-import" type="file" accept=".json,application/json" hidden></div>
+    </form>
+    <h3 class="settings-results-title">校验结果</h3><ul id="settings-checks" class="settings-checks" aria-live="polite"></ul>
+  </section>
+  <main id="workspace-main">
+    <aside class="library" id="item-library" aria-label="道具库">
+      <div class="section-title"><h2>道具库</h2><span id="item-count" class="mono">—</span></div>
+      <label class="search-label" for="search">搜索名称或 ID</label><input id="search" type="search" placeholder="例如：桃木剑 / 318" autocomplete="off">
+      <label class="search-label" for="category">道具分类</label><select id="category" aria-label="道具分类"><option value="all">全部道具</option></select>
+      <label class="filter"><input type="checkbox" id="only-editable" checked> 只显示道具</label>
+      <div id="items" class="items" aria-label="搜索结果"></div>
+      <div class="pagination"><button id="prev" aria-label="上一页">←</button><span id="page-info">—</span><button id="next" aria-label="下一页">→</button></div>
+      <details class="sources"><summary>数据来源与版本</summary><div id="sources"></div></details>
+    </aside>
+    <aside class="library" id="creature-library" aria-label="NPC与怪物库" hidden>
+      <div class="section-title"><h2>NPC与怪物</h2><span id="creature-count" class="mono">—</span></div>
+      <label class="search-label" for="creature-search">搜索名称、模板或实例 ID</label><input id="creature-search" type="search" maxlength="128" placeholder="例如：蝙蝠 / 20000" autocomplete="off">
+      <label class="search-label" for="creature-map">出现地图</label><select id="creature-map"><option value="all">全部地图</option></select>
+      <p class="muted creature-caption">按服务端存档配置分类；同一模板可出现在多张地图。</p>
+      <div id="creature-items" class="items" aria-label="NPC与怪物搜索结果" aria-live="polite"></div>
+      <div class="pagination"><button id="creature-prev" aria-label="NPC上一页">←</button><span id="creature-page">—</span><button id="creature-next" aria-label="NPC下一页">→</button></div>
+      <button id="creature-retry" hidden>重新读取NPC快照</button>
+      <details class="sources"><summary>NPC数据来源</summary><div id="creature-source"></div></details>
+    </aside>
+    <section class="preview" aria-labelledby="preview-title">
+      <div class="preview-head"><div class="item-identity"><div class="detail-icon"><img id="detail-icon" alt="道具游戏图标" width="80" height="80"><span id="icon-error" hidden>暂无图标</span></div><div><p class="eyebrow">APPEARANCE / 原始资源</p><h2 id="preview-title">选择道具</h2><p id="slot-label" class="muted">—</p><p id="model-info" class="muted">—</p></div></div><span id="id-tag" class="tag mono">ID —</span></div>
+      <div class="preview-settings"><label for="preview-mode">预览方式<select id="preview-mode" aria-label="预览方式"><option value="equipped">人物穿戴</option><option value="single">单件外观</option></select></label><label for="profile">基础人物<select id="profile" aria-label="基础人物"><option value="auto">自动匹配</option></select></label></div>
+      <div id="viewport" aria-label="道具三维预览"><div id="model-message" role="status">正在准备三维预览…</div><span class="axis-label" aria-hidden="true">Y ↑</span></div>
+      <div class="view-controls" aria-label="预览控制"><button id="rotate-left">左转</button><button id="rotate-right">右转</button><button id="zoom-in">放大</button><button id="zoom-out">缩小</button><button id="reset-view">复位</button><label><input id="wireframe" type="checkbox"> 线框</label></div>
+      <p class="preview-help">左键拖动旋转 · 滚轮缩放 · 右键平移，也可使用上方按钮</p>
+      <p class="preview-help" id="preview-scope-note">基础模型预览使用原始材质；装备姿态、染色和特效仍需与游戏内核对。</p>
+      <p id="model-warnings" class="preview-note"></p>
+      <section class="draft-area" aria-labelledby="draft-title"><div class="section-title"><h2 id="draft-title">补丁草稿</h2><span id="draft-count" class="mono">0 个操作</span></div><p class="muted">暂存后可切换道具；导出时生成服务端与客户端配套文件。</p><div id="draft-list"></div><div id="export-result"></div></section>
+    </section>
+    <section class="properties" id="properties" aria-labelledby="properties-title">
+      <div class="section-title"><h2 id="properties-title">道具属性</h2><span id="edit-state" class="tag">加载中</span></div>
+      <section id="template-properties" aria-label="模板属性" aria-busy="true">
+        <p class="template-caption">模板属性 · 只读</p>
+        <section class="property-group" aria-labelledby="requirements-title"><h3 id="requirements-title">适用条件</h3><dl id="requirements" class="property-list"><div><dt>状态</dt><dd>待选择道具</dd></div></dl></section>
+        <section class="property-group" aria-labelledby="resistances-title"><h3 id="resistances-title">抗性</h3><dl id="resistances" class="property-grid"></dl></section>
+        <section class="property-group" aria-labelledby="hidden-title"><h3 id="hidden-title">隐藏属性与其他加成</h3><dl id="hidden-attributes" class="property-list"></dl><p id="instance-note" class="property-note"></p></section>
+        <p class="property-note">数值来自客户端模板；职业名称沿用客户端简称。</p>
+      </section>
+      <form id="form"><fieldset id="editor-fields" disabled>
+        <label for="target-id">目标 ID <span class="muted">更换为空闲 ID 可复制新道具</span></label><input id="target-id" type="number" min="1" max="32767" required>
+        <label for="item-name">名称 <span class="muted">GBK 最多 15 字节</span></label><input id="item-name" required>
+        <label for="description">说明 <span class="muted">GBK 最多 199 字节</span></label><textarea id="description" rows="3"></textarea>
+        <div class="section-title stats-title"><h3>基础属性</h3><span class="muted">已确认字段</span></div><div id="stats" class="stats"></div>
+        <details class="raw"><summary>外观关联（只读）</summary><p id="appearance"></p><p class="muted">保留外观及未知字段。当前版本不写入模型文件。</p></details>
+        <p id="form-error" class="error" role="alert"></p>
+        <div class="form-actions"><button id="stage" type="submit" class="primary">暂存修改</button><button id="restore" type="button">恢复表单</button></div>
+      </fieldset></form><p id="readonly-reason" class="muted"></p>
+      <p class="footnote">属性值已按原客户端读取方式解析。单位和游戏平衡效果仍需在游戏内验证。</p>
+    </section>
+    <section class="properties" id="creature-properties" aria-labelledby="creature-properties-title" hidden>
+      <div class="section-title"><h2 id="creature-properties-title">NPC与怪物详情</h2><span class="tag">只读</span></div>
+      <p id="creature-description" class="muted"></p>
+      <section class="property-group"><h3>出现地图</h3><div id="creature-maps" class="map-memberships"></div></section>
+      <section class="property-group"><h3>出现记录与装扮</h3><label class="search-label" for="creature-instance">选择存档实例</label><select id="creature-instance"><option value="">模板基础外观</option></select><p id="creature-position" class="property-note"></p><div class="pagination"><button id="instance-prev">上一组</button><span id="instance-page">—</span><button id="instance-next">下一组</button></div></section>
+      <section class="property-group"><h3>所选实例的存档携带</h3><p id="creature-saved-note" class="property-note"></p><div class="drop-table-wrap"><table class="drop-table"><thead><tr><th scope="col">物品</th><th scope="col">存档数量</th><th scope="col">携带槽位</th></tr></thead><tbody id="creature-saved-items"></tbody></table></div></section>
+      <section class="property-group"><h3>模板初始携带规则</h3><p id="creature-drop-note" class="property-note"></p><div class="drop-table-wrap"><table class="drop-table"><thead><tr><th scope="col">候选物品</th><th scope="col">单次生成判定</th><th scope="col">最终击杀掉率</th></tr></thead><tbody id="creature-drops"></tbody></table></div><details><summary>生成判定算法与限制</summary><p id="creature-probability-note" class="property-note"></p></details></section>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body></html>

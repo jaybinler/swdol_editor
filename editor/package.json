@@ -1,0 +1,7 @@
+{
+  "name": "xyj-local-editor",
+  "private": true,
+  "version": "0.5.2",
+  "type": "module",
+  "dependencies": { "three": "0.180.0" }
+}

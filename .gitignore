@@ -1,0 +1,42 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/
+editor/node_modules/
+
+# Original game resources and databases stay outside source control.
+/swdol/
+/XYJ_SEVVER/
+*.dbf
+*.DBF
+*.MYD
+*.MYI
+*.frm
+*.mdf
+*.ldf
+*.sql
+
+# Local connection settings, credentials and editor state.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/settings.json
+/credentials.json
+/secrets/
+/.codex/
+/.agents/
+/.aws/
+
+# Internal project records and generated research stay local.
+/research/
+/交接文档.md
+
+# Local archives and operating-system files.
+*.zip
+*.7z
+*.rar
+Thumbs.db
+desktop.ini

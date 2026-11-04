@@ -1,0 +1,4 @@
+-r requirements.txt
+# Optional: used only to reproduce static analysis of the client loader.
+capstone==5.0.6
+pefile==2024.8.26

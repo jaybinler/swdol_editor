@@ -1,0 +1,217 @@
+"""Real-data editor integrity, corrupt resource rejection and HTTP request boundaries."""
+
+from dataclasses import replace
+from pathlib import Path
+from threading import Thread
+from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+import json
+import struct
+import sys
+import tempfile
+import unittest
+
+PROJECT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT / 'tools'))
+
+from editor_server import EditorState, make_handler
+from xyj_content.binary import ContentError, compress, decode_table, read_bytes
+from xyj_content.catalog import Inputs, load_inputs
+from xyj_content.editor import (FIELDS, export_editor_patch, item_detail, prepare_edits,
+                                validate_edits, verify_editor_patch)
+from xyj_content.files import sha256, write_json
+from xyj_content.language import decode_language
+from xyj_content.models import item_model, read_mesh, texture_png
+from xyj_content.objects import find_unique, view_record
+from xyj_content.patch import PAYLOAD_PATHS
+
+
+class EditorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.loaded = load_inputs(Inputs(PROJECT / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf',
+                                       PROJECT / 'swdol/Main/Object.dbf', PROJECT / 'swdol/Main/Language.DBF'))
+
+    def edit(self, source=10, target=None):
+        item = item_detail(self.loaded, source)
+        return {'source_id': source, 'target_id': source if target is None else target, 'name': item['name'],
+                'description': item['description'], 'stats': {'damage': 9, 'weight': 3}}
+
+    def test_existing_edit_changes_only_explicit_stat_bytes_on_both_sides(self):
+        blobs, changes = prepare_edits(self.loaded, [self.edit()])
+        for key, original in [('server_object', self.loaded.server), ('client_object', self.loaded.client)]:
+            modified = decode_table(blobs[key])
+            self.assertEqual(len(original.records), len(modified.records))
+            for before, after in zip(original.records, modified.records):
+                if struct.unpack_from('<I', before, 4)[0] == 10:
+                    allowed = {104, 105, 172, 173, 174, 175}
+                    self.assertTrue(all(a == b or i in allowed for i, (a, b) in enumerate(zip(before, after))))
+                    self.assertEqual(struct.unpack_from('<h', after, 104)[0], 9)
+                else:
+                    self.assertEqual(before, after)
+        self.assertEqual(decode_language(blobs['client_language']), self.loaded.language)
+
+    def test_clone_and_edit_preserve_all_original_other_records_and_strings(self):
+        edit = self.edit(target=319)
+        edit['name'] = '工坊测试剑'
+        edit['description'] = ''
+        blobs, changes = prepare_edits(self.loaded, [edit, self.edit(source=318)])
+        language = decode_language(blobs['client_language'])
+        self.assertEqual(language.entries[:len(self.loaded.language.entries)], self.loaded.language.entries)
+        self.assertEqual(len(language.entries), len(self.loaded.language.entries) + 2)
+        for key, original in [('server_object', self.loaded.server), ('client_object', self.loaded.client)]:
+            modified = decode_table(blobs[key])
+            index, record = find_unique(modified, 319)
+            view = view_record(record, index, language if key.startswith('client') else None)
+            self.assertEqual((view.name, view.description), ('工坊测试剑', ''))
+            self.assertEqual(record[60:64], find_unique(original, 10)[1][60:64])
+            remaining = tuple(r for r in modified.records if struct.unpack_from('<I', r, 4)[0] not in (318, 319))
+            self.assertEqual(remaining, tuple(r for r in original.records if struct.unpack_from('<I', r, 4)[0] != 318))
+
+    def test_conflicting_ids_and_unknown_or_overflow_fields_rejected(self):
+        cases = []
+        edit = self.edit(target=318); cases.append([edit])
+        cases.append([self.edit(), self.edit()])
+        for value in ({'damage': 32768}, {'damage': True}, {'damage': 1.5}, {'unverified': 0}):
+            edit = self.edit(); edit['stats'] = value; cases.append([edit])
+        for case in cases:
+            with self.subTest(case=case), self.assertRaises(ContentError):
+                validate_edits(self.loaded, case)
+
+    def test_text_encoding_and_unsigned_id_boundary_rejected(self):
+        for key, value in [('name', '长'*8), ('description', '\0'), ('name', '剑😀'), ('target_id', 0)]:
+            edit = self.edit(); edit[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ContentError):
+                validate_edits(self.loaded, [edit])
+
+    def test_cross_side_drift_rejected(self):
+        index, record = find_unique(self.loaded.server, 10)
+        record = bytearray(record); record[800] ^= 1
+        server = replace(self.loaded.server, records=self.loaded.server.records[:index] + (bytes(record),) + self.loaded.server.records[index+1:])
+        with self.assertRaisesRegex(ContentError, '不一致'):
+            prepare_edits(replace(self.loaded, server=server), [self.edit()])
+
+    def test_character_script_record_cannot_be_edited_as_an_item(self):
+        tables = []
+        for table in (self.loaded.server, self.loaded.client):
+            index, record = find_unique(table, 10)
+            record = bytearray(record)
+            struct.pack_into('<H', record, 60, 1)  # all_char.act namespace
+            tables.append(replace(table, records=table.records[:index] + (bytes(record),) + table.records[index+1:]))
+        loaded = replace(self.loaded, server=tables[0], client=tables[1])
+        self.assertFalse(item_detail(loaded, 10)['editable'])
+        with self.assertRaisesRegex(ContentError, '只读'):
+            prepare_edits(loaded, [self.edit()])
+
+    def test_signed_attribute_boundaries_roundtrip(self):
+        edit = self.edit()
+        edit['stats'] = {'damage': -32768, 'defense': 32767, 'weight': -2147483648, 'delay': 2147483647}
+        blobs, _ = prepare_edits(self.loaded, [edit])
+        for key in ('client_object', 'server_object'):
+            record = find_unique(decode_table(blobs[key]), 10)[1]
+            for field, value in edit['stats'].items():
+                _, offset, fmt = FIELDS[field]
+                self.assertEqual(struct.unpack_from('<'+fmt, record, offset)[0], value)
+
+    def test_export_rebuild_verifier_detects_rehashed_opaque_byte_tampering(self):
+        with tempfile.TemporaryDirectory(dir=PROJECT / 'output', prefix='editor-test-') as temp:
+            root = Path(temp)
+            paths = []
+            for (key, relative), blob in zip(PAYLOAD_PATHS.items(), self.loaded.blobs):
+                path = root / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(blob); paths.append(path)
+            loaded = load_inputs(Inputs(*paths))
+            result = export_editor_patch(root, loaded, [self.edit(target=319)])
+            directory = Path(result['path'])
+            self.assertTrue(verify_editor_patch(root, directory)['all_records_checked'])
+            from xyj_content.binary import encode_table
+            path = directory / PAYLOAD_PATHS['client_object']
+            table = decode_table(path.read_bytes())
+            index, record = find_unique(table, 319)
+            record = bytearray(record); record[810] ^= 1
+            table = replace(table, records=table.records[:index] + (bytes(record),) + table.records[index+1:])
+            blob = encode_table(table); path.write_bytes(blob)
+            manifest = json.loads((directory / 'manifest.json').read_text('utf-8'))
+            manifest['files']['client_object']['sha256'] = sha256(blob)
+            write_json(directory / 'manifest.json', manifest)
+            with self.assertRaisesRegex(ContentError, '草稿之外'):
+                verify_editor_patch(root, directory)
+
+    def test_real_peach_sword_mapping_and_mesh_bounds(self):
+        mesh = item_model(PROJECT / 'swdol', find_unique(self.loaded.client, 10)[1])
+        self.assertEqual(mesh['file'], 'ITM00198.PLY')
+        self.assertEqual(len(mesh['meshes']), 1)  # attachment helpers are hidden
+        self.assertEqual(mesh['meshes'][0]['texture'], 554)
+        for actual, expected in zip(mesh['bounds'], mesh['action']['bounds']):
+            for a, b in zip(actual, expected): self.assertAlmostEqual(a, b, places=4)
+        png = texture_png(PROJECT / 'swdol', 554)
+        self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
+        self.assertEqual(struct.unpack_from('>II', png, 16), (128, 128))
+
+    def test_empty_model_and_corrupt_texture_rejected(self):
+        with self.assertRaises(ContentError):
+            read_mesh(PROJECT / 'swdol/MODEL/ITM00289.PLY')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); (root / 'TEX').mkdir()
+            raw = struct.pack('<4H', 65535, 2, 1, 16) + struct.pack('<4H', 8, 3, 0, 0)
+            packed = compress(raw)
+            (root / 'TEX/ALL00001.TEX').write_bytes(struct.pack('<II', len(raw), len(packed)) + packed)
+            with self.assertRaises(ContentError): texture_png(root, 1)
+
+
+class HTTPBoundaryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.state = EditorState(PROJECT, PROJECT / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf')
+        cls.server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(cls.state))
+        cls.thread = Thread(target=cls.server.serve_forever, daemon=True); cls.thread.start()
+        cls.url = f'http://127.0.0.1:{cls.server.server_port}'
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown(); cls.server.server_close(); cls.thread.join()
+
+    def test_cross_origin_write_and_host_rebinding_are_rejected(self):
+        request = Request(self.url + '/api/draft', data=b'{}', headers={'Content-Type':'application/json',
+                          'Origin':'https://untrusted.example', 'X-Editor-Token': self.state.token})
+        with self.assertRaises(HTTPError) as failure: urlopen(request)
+        self.assertEqual(failure.exception.code, 403)
+        request = Request(self.url + '/api/bootstrap', headers={'Host':'untrusted.example'})
+        with self.assertRaises(HTTPError) as failure: urlopen(request)
+        self.assertEqual(failure.exception.code, 403)
+
+    def test_static_allowlist_does_not_expose_game_or_draft_files(self):
+        for path in ('/../swdol/Main/Object.dbf', '/output/editor/draft.json', '/vendor/../../tools/editor_server.py'):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as failure: urlopen(self.url + path)
+            self.assertEqual(failure.exception.code, 404)
+
+    def test_stale_draft_revision_rejected_without_write(self):
+        with self.assertRaisesRegex(ContentError, '其他页面'):
+            self.state.save({'revision': -1, 'edits': []})
+
+    def test_icon_and_dynamic_character_material_endpoints(self):
+        icon = urlopen(self.url + '/api/icon/10.png').read()
+        sprite = urlopen(self.url + '/api/sprite/3375/0.png').read()
+        self.assertEqual(icon, sprite)
+        model = json.load(urlopen(self.url + '/api/model/3178?mode=equipped&profile=auto'))
+        self.assertEqual(model['profile'], 'human_male')
+        self.assertEqual(model['meshes'][0]['texture_url'], '/api/sprite/3015/0.png')
+
+    def test_readonly_template_properties_are_available_in_item_api(self):
+        shield = json.load(urlopen(self.url + '/api/item/3369'))['template_properties']
+        self.assertEqual([v['value'] for v in shield['resistances']], [12]*6)
+        self.assertEqual(shield['hidden_attributes'][0]['source'], 'instance_required')
+        sword = json.load(urlopen(self.url + '/api/item/82'))['template_properties']
+        self.assertEqual(sword['resistances'][1]['value'], -18)
+        self.assertEqual(sword['scope'], 'client_template')
+
+    def test_invalid_profile_and_sprite_frame_fail_without_exposing_files(self):
+        for path in ('/api/model/3178?mode=equipped&profile=fairy_female', '/api/sprite/3375/999.png',
+                     '/api/model/10?mode=unknown'):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as failure:
+                urlopen(self.url + path)
+            self.assertEqual(failure.exception.code, 400)
+
+
+if __name__ == '__main__':
+    unittest.main()
