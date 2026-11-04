@@ -20,7 +20,7 @@ import subprocess
 from xyj_content.binary import ContentError, read_bytes
 from xyj_content.catalog import Inputs, load_inputs, source_hashes
 from xyj_content.editor import (export_editor_patch, field_schema, item_detail,
-                                validate_edits, verify_editor_patch)
+                                item_id_availability, validate_edits, verify_editor_patch)
 from xyj_content.files import output_path, read_json, write_json
 from xyj_content.models import item_model, texture_png
 from xyj_content.sprites import icon_reference, sprite_png
@@ -165,12 +165,17 @@ def make_handler(context):
                                    'sources': state.sources, 'revision': state.revision, 'edits': state.edits,
                                    'categories': category_options(), 'profiles': profile_options(), 'ready': True,
                                    'workspace_generation': generation})
+                elif path == '/api/item-ids':
+                    with state.lock:
+                        self.json({**item_id_availability(state.loaded, state.edits),
+                                   'revision': state.revision, 'workspace_generation': generation})
                 elif path == '/api/creatures/catalog':
                     self.json(state.creatures().metadata())
                 elif path == '/api/creatures':
                     query = parse_qs(urlsplit(self.path).query)
                     self.json(state.creatures().listing(query.get('q', [''])[0], query.get('map', ['all'])[0],
-                                                        int(query.get('page', ['0'])[0])))
+                                                        int(query.get('page', ['0'])[0]),
+                                                        int(query['template_id'][0]) if 'template_id' in query else None))
                 elif path.startswith('/api/creatures/'):
                     parts = path.strip('/').split('/')
                     if len(parts) not in (3, 4) or (len(parts) == 4 and parts[3] != 'model'):
@@ -184,7 +189,15 @@ def make_handler(context):
                         self.json(state.creatures().detail(template_id, query.get('map', ['all'])[0],
                                                            int(query.get('page', ['0'])[0])))
                 elif path.startswith('/api/item/'):
-                    self.json(item_detail(state.loaded, int(path.rsplit('/', 1)[1])))
+                    parts = path.strip('/').split('/')
+                    if len(parts) == 3:
+                        self.json(item_detail(state.loaded, int(parts[2])))
+                    elif len(parts) == 4 and parts[3] == 'drop-sources':
+                        query = parse_qs(urlsplit(self.path).query)
+                        self.json({**state.creatures().drop_sources(int(parts[2]), int(query.get('page', ['0'])[0])),
+                                   'workspace_generation': generation})
+                    else:
+                        raise ContentError('道具接口路径无效。')
                 elif path.startswith('/api/model/'):
                     _, record = find_unique(state.loaded.client, int(path.rsplit('/', 1)[1]))
                     query = parse_qs(urlsplit(self.path).query)
@@ -218,6 +231,8 @@ def make_handler(context):
                     allowed = {'/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js',
                                '/creatures.js': 'creatures.js',
                                '/settings.js': 'settings.js',
+                               '/item-workflow.js': 'item-workflow.js',
+                               '/item-drops.js': 'item-drops.js',
                                '/viewer.js': 'viewer.js', '/style.css': 'style.css',
                                '/vendor/three.module.js': 'node_modules/three/build/three.module.js',
                                '/vendor/three.core.js': 'node_modules/three/build/three.core.js',

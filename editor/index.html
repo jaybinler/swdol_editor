@@ -37,6 +37,13 @@
   <main id="workspace-main">
     <aside class="library" id="item-library" aria-label="道具库">
       <div class="section-title"><h2>道具库</h2><span id="item-count" class="mono">—</span></div>
+      <button id="new-item" class="primary" disabled>新增道具</button>
+      <section id="template-picker" class="template-picker" aria-labelledby="template-picker-title" hidden>
+        <h3 id="template-picker-title" tabindex="-1">选择新增模板</h3>
+        <p class="muted">按名称、ID 或分类查找，再点击下方道具。新增将复用模板图标和模型。</p>
+        <p id="template-error" class="error" role="alert"></p>
+        <button id="cancel-template" type="button">取消选择</button>
+      </section>
       <label class="search-label" for="search">搜索名称或 ID</label><input id="search" type="search" placeholder="例如：桃木剑 / 318" autocomplete="off">
       <label class="search-label" for="category">道具分类</label><select id="category" aria-label="道具分类"><option value="all">全部道具</option></select>
       <label class="filter"><input type="checkbox" id="only-editable" checked> 只显示道具</label>
@@ -62,25 +69,39 @@
       <p class="preview-help">左键拖动旋转 · 滚轮缩放 · 右键平移，也可使用上方按钮</p>
       <p class="preview-help" id="preview-scope-note">基础模型预览使用原始材质；装备姿态、染色和特效仍需与游戏内核对。</p>
       <p id="model-warnings" class="preview-note"></p>
+      <section id="item-drop-sources" class="item-drop-sources" aria-labelledby="item-drop-title" aria-busy="false">
+        <div class="section-title"><h2 id="item-drop-title">掉落怪物</h2><span id="item-drop-count">—</span></div>
+        <p id="item-drop-note" class="property-note" role="status">选择道具后查看掉落怪物。</p>
+        <table class="item-source-table"><thead><tr><th scope="col">怪物</th><th scope="col">编号</th><th scope="col">出现地图</th></tr></thead><tbody id="item-drop-rows"></tbody></table>
+        <div class="pagination"><button id="item-drop-prev" aria-label="掉落怪物上一页" disabled>上一页</button><span id="item-drop-page">—</span><button id="item-drop-next" aria-label="掉落怪物下一页" disabled>下一页</button></div>
+        <button id="item-drop-retry" hidden>重新读取掉落怪物</button>
+      </section>
       <section class="draft-area" aria-labelledby="draft-title"><div class="section-title"><h2 id="draft-title">补丁草稿</h2><span id="draft-count" class="mono">0 个操作</span></div><p class="muted">暂存后可切换道具；导出时生成服务端与客户端配套文件。</p><div id="draft-list"></div><div id="export-result"></div></section>
     </section>
     <section class="properties" id="properties" aria-labelledby="properties-title">
       <div class="section-title"><h2 id="properties-title">道具属性</h2><span id="edit-state" class="tag">加载中</span></div>
+      <div class="item-actions"><button id="edit-item" disabled>编辑道具</button><button id="clone-item" disabled>以此为模板新增</button></div>
+      <p id="workflow-note" class="property-note">选择道具后可编辑，或以它为模板新增。</p>
+      <p id="template-source" class="template-source" hidden></p>
       <section id="template-properties" aria-label="模板属性" aria-busy="true">
-        <p class="template-caption">模板属性 · 只读</p>
+        <p class="template-caption">属性概览 · 与当前表单同步</p>
         <section class="property-group" aria-labelledby="requirements-title"><h3 id="requirements-title">适用条件</h3><dl id="requirements" class="property-list"><div><dt>状态</dt><dd>待选择道具</dd></div></dl></section>
         <section class="property-group" aria-labelledby="resistances-title"><h3 id="resistances-title">抗性</h3><dl id="resistances" class="property-grid"></dl></section>
         <section class="property-group" aria-labelledby="hidden-title"><h3 id="hidden-title">隐藏属性与其他加成</h3><dl id="hidden-attributes" class="property-list"></dl><p id="instance-note" class="property-note"></p></section>
         <p class="property-note">数值来自客户端模板；职业名称沿用客户端简称。</p>
       </section>
       <form id="form"><fieldset id="editor-fields" disabled>
-        <label for="target-id">目标 ID <span class="muted">更换为空闲 ID 可复制新道具</span></label><input id="target-id" type="number" min="1" max="32767" required>
+        <label for="target-id" id="target-id-label">道具 ID</label>
+        <div class="id-controls"><input id="target-id" type="number" min="1" max="32767" step="1" required readonly aria-describedby="id-hint"><button id="suggest-id" type="button" hidden>推荐空闲 ID</button></div>
+        <p id="id-hint" class="property-note" aria-live="polite"></p>
         <label for="item-name">名称 <span class="muted">GBK 最多 15 字节</span></label><input id="item-name" required>
         <label for="description">说明 <span class="muted">GBK 最多 199 字节</span></label><textarea id="description" rows="3"></textarea>
         <div class="section-title stats-title"><h3>基础属性</h3><span class="muted">已确认字段</span></div><div id="stats" class="stats"></div>
+        <div class="section-title stats-title"><h3>抗性</h3><span class="muted">-128 至 127</span></div><div id="resistance-stats" class="stats"></div>
+        <div class="section-title stats-title"><h3>回复属性</h3><span class="muted">-32768 至 32767</span></div><div id="recovery-stats" class="stats"></div>
         <details class="raw"><summary>外观关联（只读）</summary><p id="appearance"></p><p class="muted">保留外观及未知字段。当前版本不写入模型文件。</p></details>
         <p id="form-error" class="error" role="alert"></p>
-        <div class="form-actions"><button id="stage" type="submit" class="primary">暂存修改</button><button id="restore" type="button">恢复表单</button></div>
+        <div class="form-actions" id="form-actions" hidden><button id="stage" type="submit" class="primary">暂存修改</button><button id="restore" type="button">恢复表单</button><button id="cancel-edit" type="button">返回查看</button></div>
       </fieldset></form><p id="readonly-reason" class="muted"></p>
       <p class="footnote">属性值已按原客户端读取方式解析。单位和游戏平衡效果仍需在游戏内验证。</p>
     </section>
@@ -91,5 +112,10 @@
       <section class="property-group"><h3>掉落道具</h3><div class="drop-table-wrap"><table class="drop-table"><thead><tr><th scope="col">道具</th><th scope="col">掉率</th></tr></thead><tbody id="creature-drops"></tbody></table></div></section>
     </section>
   </main>
+  <dialog id="discard-dialog" aria-labelledby="discard-title" aria-describedby="discard-message">
+    <form method="dialog"><h2 id="discard-title">有未暂存的内容</h2><p id="discard-message"></p>
+      <div class="dialog-actions"><button value="keep" autofocus>保留输入</button><button value="discard" class="primary">放弃并继续</button></div>
+    </form>
+  </dialog>
   <script type="module" src="/app.js"></script>
 </body></html>

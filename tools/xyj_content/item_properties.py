@@ -16,10 +16,20 @@ RESISTANCES = tuple((key, label, 186 + i) for i, (key, label) in enumerate((
     ('fire', '抗火'), ('water', '抗水'), ('wind', '抗风'),
     ('thunder', '抗雷'), ('light', '抗光'), ('dark', '抗暗'))))
 
-# (key, label, offset, signed format, display multiplier). Never write these fields.
+# Read-only projection schema: (key, label, offset, signed format, display multiplier).
+# Only the editor's separate field allowlist permits writes to recovery attributes.
 # Movement / attack speed / guard: 0x5862cd..0x5864a8.
+# Conversion / armor break: Object +0xfc/+0xfa enter character +0x276/+0x274
+# at 0x587f0f..0x587f44 and 0x5c80f8..0x5c812d. The tooltip names those
+# character fields at 0x585f3d..0x585fc8 (Language 131 conversion, 132 armor break).
+# Recovery: 0x5864c2..0x5865fd, Language 297/298. Read each template field
+# independently; do not reproduce the native MP-affix branch's HP-field read.
 EXTRA_FIELDS = (
+    ('conversion', '化元', 252, 'h', 1),
     ('guard', '御劲', 472, 'i', -1),
+    ('armor_break', '崩甲', 250, 'h', 1),
+    ('hp_recovery', '体力回复', 130, 'h', 1),
+    ('mp_recovery', '灵力回复', 132, 'h', 1),
     ('movement', '移动力', 138, 'h', 1),
     ('attack_speed', '攻击速度', 476, 'i', 1),
 )
@@ -47,7 +57,7 @@ def _template_value(record, offset, fmt, sign):
 
 
 def template_properties(record: bytes) -> dict:
-    """Project template values without edits; unresolved instance-only bonuses remain null."""
+    """Project fixed template values, including zero; never infer equipment instance bonuses."""
     if len(record) != OBJECT_STRIDE:
         raise ContentError('道具属性记录宽度无效。')
     applicable = struct.unpack_from('<H', record, 8)[0] in ITEM_TYPES
@@ -71,12 +81,7 @@ def template_properties(record: bytes) -> dict:
                'unit': '%' if key == 'guard' else '',
                'source': 'template' if applicable else 'not_applicable'}
               for key, label, offset, fmt, sign in EXTRA_FIELDS]
-    # 0x5841e5..0x58426b reads only the instance modifier buffer. It is cleared
-    # at 0x5d1e00 and populated from an additional item code (0x5d2680), not Object.
-    affixes = [{'key': key, 'label': label, 'value': None,
-                'source': 'instance_required' if applicable else 'not_applicable'}
-               for key, label in (('conversion', '化元'), ('armor_break', '崩甲'))]
     return {'scope': 'client_template', 'applicable': applicable,
             'requirements': groups, 'resistances': resistances,
-            'hidden_attributes': [affixes[0], extras[0], affixes[1], *extras[1:]],
+            'hidden_attributes': extras,
             'raw_conditions': {'allow_mask': mask, 'sex_code': sex}}

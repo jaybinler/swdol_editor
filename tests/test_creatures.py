@@ -1,6 +1,6 @@
 """NPC map membership, real saved appearances, probability semantics and read-only HTTP boundaries."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import replace
 from http.server import ThreadingHTTPServer
@@ -74,6 +74,54 @@ class CreatureTests(unittest.TestCase):
         self.assertEqual([r['id'] for r in wolf['inventory']], [6160, 3062, 6712, 6007])
         self.assertTrue(all(r['drop_percent'] is None for r in wolf['inventory']))
         self.assertEqual(wolf['drop_status'], 'unconfirmed')
+
+    def test_drop_sources_reverse_every_template_rule_once_with_consistent_maps(self):
+        expected = defaultdict(set)
+        for tid, record in self.catalog.records.items():
+            for item in inventory_rules(record, self.catalog.definitions):
+                if item['id'] > 0:
+                    expected[item['id']].add(tid)
+        self.assertEqual(set(self.catalog.item_sources), set(expected))
+        for item_id, ids in expected.items():
+            first = self.catalog.drop_sources(item_id)
+            rows = [row for page in range(first['pages'])
+                    for row in self.catalog.drop_sources(item_id, page)['items']]
+            with self.subTest(item_id=item_id):
+                self.assertEqual([row['id'] for row in rows], sorted(ids))
+                self.assertEqual(first['total'], len(ids))
+                self.assertTrue(all({m['id'] for m in row['maps']} ==
+                                    self.catalog.map_memberships.get(row['id'], set()) for row in rows))
+
+    def test_drop_sources_deduplicate_slots_and_do_not_inherit_from_source_item(self):
+        row = deepcopy(self.catalog.entries[0])
+        record = bytearray(self.catalog.records[row['id']])
+        struct.pack_into('<12h', record, 254, 319, 319, *([-1]*10))
+        # A fresh index is built from a loaded baseline, rather than from client-only draft operations.
+        table = self.state.loaded.server
+        records = tuple(bytes(record) if struct.unpack_from('<I', r, 4)[0] == row['id'] else r for r in table.records)
+        loaded = replace(self.state.loaded, server=replace(table, records=records))
+        catalog = CreatureCatalog(ROOT, loaded)
+        rows = catalog.drop_sources(319)['items']
+        self.assertEqual([r['id'] for r in rows].count(row['id']), 1)
+        self.assertEqual(self.catalog.drop_sources(319)['total'], 0)
+
+    def test_drop_source_bounds_pagination_and_exact_template_selection(self):
+        popular_id = max(self.catalog.item_sources, key=lambda key: len(self.catalog.item_sources[key]))
+        first = self.catalog.drop_sources(popular_id)
+        self.assertLessEqual(len(first['items']), 60)
+        last = self.catalog.drop_sources(popular_id, 100000)
+        self.assertEqual(last['page'], last['pages'] - 1)
+        with patch.dict(self.catalog.item_sources, {32767: [row['id'] for row in self.catalog.entries[:61]]}):
+            self.assertEqual((self.catalog.drop_sources(32767)['total'], len(self.catalog.drop_sources(32767)['items'])), (61, 60))
+            second = self.catalog.drop_sources(32767, 100000)
+            self.assertEqual((second['page'], second['pages'], len(second['items'])), (1, 2, 1))
+        for item_id, page in ((0, 0), (32768, 0), (True, 0), (10, -1), (10, True), (10, 100001)):
+            with self.subTest(item=item_id, page=page), self.assertRaises(ContentError):
+                self.catalog.drop_sources(item_id, page)
+        result = self.catalog.listing(template_id=20003)
+        self.assertEqual([row['id'] for row in result['items']], [20003])
+        with self.assertRaises(ContentError):
+            self.catalog.listing(template_id=999999)
 
     def test_unknown_items_and_capacity_are_not_silently_removed(self):
         record = bytearray(self.catalog.records[20000])
@@ -199,6 +247,32 @@ class CreatureHTTPTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as error:
             urlopen(request)
         self.assertEqual(error.exception.code, 404)
+        self.assertEqual((self.state.revision, self.state.edits), before)
+
+    def test_item_drop_routes_are_readonly_exact_and_bounded(self):
+        before = (self.state.revision, deepcopy(self.state.edits))
+        data = json.load(urlopen(self.url + '/api/item/6160/drop-sources'))
+        self.assertIn(20003, [row['id'] for row in data['items']])
+        self.assertEqual(data['scope'], 'npc_template_inventory')
+        exact = json.load(urlopen(self.url + '/api/creatures?template_id=20003'))
+        self.assertEqual([row['id'] for row in exact['items']], [20003])
+        empty = json.load(urlopen(self.url + '/api/item/319/drop-sources'))
+        self.assertEqual(empty['total'], 0)
+        for route in ('/api/item/0/drop-sources', '/api/item/10/drop-sources?page=-1',
+                      '/api/item/10/unknown', '/api/creatures?template_id=999999'):
+            with self.subTest(route=route), self.assertRaises(HTTPError) as error:
+                urlopen(self.url + route)
+            self.assertEqual(error.exception.code, 400)
+        self.assertEqual((self.state.revision, self.state.edits), before)
+        self.assertIn('export class ItemDropSources', urlopen(self.url + '/item-drops.js').read().decode('utf-8'))
+
+    def test_snapshot_failure_does_not_block_item_detail_or_change_draft(self):
+        before = (self.state.revision, deepcopy(self.state.edits))
+        with patch.object(self.state, 'creatures', side_effect=ContentError('NPC 快照不可用')):
+            with self.assertRaises(HTTPError) as failure:
+                urlopen(self.url + '/api/item/10/drop-sources')
+            self.assertEqual(failure.exception.code, 400)
+            self.assertEqual(json.load(urlopen(self.url + '/api/item/10'))['id'], 10)
         self.assertEqual((self.state.revision, self.state.edits), before)
 
 

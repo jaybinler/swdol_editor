@@ -1,7 +1,8 @@
 {
   "name": "xyj-local-editor",
   "private": true,
-  "version": "0.5.5",
+  "version": "0.8.0",
   "type": "module",
+  "scripts": { "test": "node --test ../tests/item-workflow.test.mjs ../tests/item-drops.test.mjs" },
   "dependencies": { "three": "0.180.0" }
 }

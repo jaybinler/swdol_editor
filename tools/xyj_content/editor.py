@@ -17,7 +17,7 @@ from .language import decode_language, encode_language
 from .objects import encode_fixed_text, find_unique, view_record, without_text
 from .patch import PAYLOAD_PATHS, insertion_position
 from .taxonomy import item_categories
-from .item_properties import template_properties
+from .item_properties import RESISTANCES, template_properties
 
 # SWDOL.exe 0x581900..0x581e7b: direct Object reads and Language label lookups.
 FIELDS = {
@@ -30,19 +30,36 @@ FIELDS = {
     "hp": ("体力上限", 112, "h"), "mp": ("灵力上限", 114, "h"),
     "hit": ("命中率", 124, "h"), "evasion": ("回避率", 126, "h"),
     "delay": ("延迟（原始值）", 144, "i"), "weight": ("重量", 172, "i"),
+    "hp_recovery": ("体力回复", 130, "h"), "mp_recovery": ("灵力回复", 132, "h"),
+    **{f"resist_{key}": (label, offset, "b") for key, label, offset in RESISTANCES},
 }
 
 
 def field_schema() -> list[dict]:
     """Expose only fields whose label, width and signedness have native-code evidence."""
-    return [{"key": key, "label": label, "offset": offset, "min": -(2**(15 if fmt == 'h' else 31)),
-             "max": 2**(15 if fmt == 'h' else 31)-1} for key, (label, offset, fmt) in FIELDS.items()]
+    fields = []
+    for key, (label, offset, fmt) in FIELDS.items():
+        bits = struct.calcsize('<' + fmt) * 8
+        group = 'resistances' if key.startswith('resist_') else 'recovery' if key.endswith('_recovery') else 'basic'
+        fields.append({"key": key, "label": label, "offset": offset,
+                       "min": -(2**(bits - 1)), "max": 2**(bits - 1) - 1, "group": group})
+    return fields
 
 
 def stats(record: bytes) -> dict:
     """Project the confirmed signed attribute values without changing the record."""
     return {key: struct.unpack_from('<' + fmt, record, offset)[0]
             for key, (_, offset, fmt) in FIELDS.items()}
+
+
+def item_id_availability(loaded: Loaded, edits: list) -> dict:
+    """Suggest an unreserved ID, excluding every record on either side and current drafts."""
+    baseline = {struct.unpack_from('<I', record, 4)[0]
+                for table in (loaded.server, loaded.client) for record in table.records}
+    drafted = {edit['target_id'] for edit in edits}
+    occupied = baseline | drafted
+    return {'baseline_ids': sorted(baseline), 'draft_ids': sorted(drafted),
+            'suggested_id': next((value for value in range(1, 32768) if value not in occupied), None)}
 
 
 def item_detail(loaded: Loaded, object_id: int) -> dict:

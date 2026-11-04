@@ -77,12 +77,33 @@ class ItemPropertiesTests(unittest.TestCase):
         struct.pack_into('<i', record, 472, -2147483648)
         self.assertEqual(template_properties(record)['hidden_attributes'][1]['value'], -2147483648)
 
-    def test_instance_only_bonuses_are_unknown_not_fake_zero(self):
-        result = template_properties(self.record())
-        hidden = {v['key']: v for v in result['hidden_attributes']}
-        for key in ('conversion', 'armor_break'):
-            self.assertIsNone(hidden[key]['value'])
-            self.assertEqual(hidden[key]['source'], 'instance_required')
+    def test_real_4028_hidden_template_fields_match_both_sides(self):
+        for side in ('client', 'server'):
+            record = find_unique(getattr(self.loaded, side), 4028)[1]
+            hidden = {v['key']: v for v in template_properties(record)['hidden_attributes']}
+            expected = {'conversion': 15, 'guard': 0, 'armor_break': 0,
+                        'hp_recovery': 2, 'mp_recovery': 0}
+            with self.subTest(side=side):
+                self.assertEqual({key: hidden[key]['value'] for key in expected}, expected)
+                self.assertTrue(all(hidden[key]['source'] == 'template' for key in expected))
+                self.assertEqual(hidden['hp_recovery']['label'], '体力回复')
+                self.assertEqual(hidden['mp_recovery']['label'], '灵力回复')
+
+    def test_zero_hidden_template_fields_are_not_instance_placeholders(self):
+        hidden = {v['key']: v for v in template_properties(self.record())['hidden_attributes']}
+        for key in ('conversion', 'armor_break', 'hp_recovery', 'mp_recovery'):
+            self.assertEqual(hidden[key]['value'], 0)
+            self.assertEqual(hidden[key]['source'], 'template')
+
+    def test_hidden_signed_fields_are_independent_and_preserve_input(self):
+        record = self.record(4028)
+        for offset, value in ((252, -32768), (250, 32767), (130, -3), (132, 11)):
+            struct.pack_into('<h', record, offset, value)
+        before = bytes(record)
+        hidden = {v['key']: v['value'] for v in template_properties(record)['hidden_attributes']}
+        self.assertEqual([hidden[k] for k in ('conversion', 'armor_break', 'hp_recovery', 'mp_recovery')],
+                         [-32768, 32767, -3, 11])
+        self.assertEqual(bytes(record), before)
 
     def test_non_item_and_truncated_record_are_explicit(self):
         record = self.record()
@@ -106,9 +127,11 @@ class ItemPropertiesTests(unittest.TestCase):
     def test_new_readonly_properties_cannot_enter_draft_and_unrelated_bytes_survive(self):
         before = item_detail(self.loaded, 3369)
         edit = {'source_id': 3369, 'target_id': 3369, 'name': before['name'],
-                'description': before['description'], 'stats': {'guard': 10}}
-        with self.assertRaises(ContentError):
-            validate_edits(self.loaded, [edit])
+                'description': before['description'], 'stats': {}}
+        for key in ('guard', 'conversion', 'armor_break'):
+            edit['stats'] = {key: 10}
+            with self.subTest(key=key), self.assertRaises(ContentError):
+                validate_edits(self.loaded, [edit])
         edit['stats'] = {'strength': 13}
         blobs, _ = prepare_edits(self.loaded, [edit])
         for key, table in (('client_object', self.loaded.client), ('server_object', self.loaded.server)):

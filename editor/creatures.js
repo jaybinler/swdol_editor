@@ -8,6 +8,7 @@ export class CreatureBrowser {
     this.page = 0;
     this.listTicket = this.detailTicket = this.modelTicket = 0;
     $('creature-search').addEventListener('input', () => {
+      this.exactTemplateId = null;
       clearTimeout(this.debounce);
       this.listTicket++;
       this.debounce = setTimeout(() => { this.page = 0; this.list(); }, 200);
@@ -23,6 +24,25 @@ export class CreatureBrowser {
     this.active = false;
     this.listTicket++; this.detailTicket++; this.modelTicket++;
     clearTimeout(this.debounce);
+  }
+
+  /** Focus one exact template independently of old search/map filters, without touching item state. */
+  async openTemplate(id) {
+    clearTimeout(this.debounce);
+    this.detailTicket++;
+    this.clearDetail();
+    this.exactTemplateId = id;
+    this.page = 0;
+    $('creature-search').value = String(id);
+    $('creature-map').value = 'all';
+    delete this.initialMap;
+    await this.open();
+    if (this.active && this.selected?.id === id) {
+      const heading = $('creature-properties-title');
+      heading.tabIndex = -1;
+      heading.focus({preventScroll: true});
+      $('creature-items').querySelector(`[data-creature-id="${id}"]`)?.scrollIntoView({block: 'nearest'});
+    }
   }
 
   /** Load map names and provenance once; a failed snapshot can be retried without reloading item drafts. */
@@ -70,6 +90,7 @@ export class CreatureBrowser {
     $('creature-items').setAttribute('aria-busy', 'true');
     $('creature-prev').disabled = $('creature-next').disabled = true;
     const query = new URLSearchParams({q: $('creature-search').value, map: $('creature-map').value, page: String(this.page)});
+    if (this.exactTemplateId != null) query.set('template_id', String(this.exactTemplateId));
     try {
       const result = await this.api(`/api/creatures?${query}`);
       if (!this.active || ticket !== this.listTicket) return;

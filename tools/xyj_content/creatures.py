@@ -148,6 +148,29 @@ class CreatureCatalog:
             self.entries.append({'id': tid, 'name': name, 'maps': maps, 'instance_count': len(instances),
                                  'search': ' '.join([name, str(tid), *aliases, *(str(r['id']) for r in instances)]).lower()})
         self.entries.sort(key=lambda e: e['id'])
+        self.entries_by_id = {entry['id']: entry for entry in self.entries}
+        self.item_sources = defaultdict(list)
+        for entry in self.entries:
+            item_ids = {item['id'] for item in inventory_rules(self.records[entry['id']], self.definitions)
+                        if item['id'] > 0}
+            for item_id in item_ids:
+                self.item_sources[item_id].append(entry['id'])
+
+    def drop_sources(self, object_id: int, page: int = 0) -> dict:
+        """Read deduplicated template-configured sources; new IDs return empty without inheriting a template."""
+        if type(object_id) is not int or not 1 <= object_id <= 32767:
+            raise ContentError('道具 ID 必须是 1 至 32767 的整数。')
+        if type(page) is not int or not 0 <= page <= 100000:
+            raise ContentError('掉落怪物页码无效。')
+        ids = self.item_sources.get(object_id, ())
+        pages = max(1, (len(ids) + PAGE_SIZE - 1) // PAGE_SIZE)
+        page = min(page, pages - 1)
+        return {'item_id': object_id, 'total': len(ids), 'page': page, 'pages': pages,
+                'scope': 'npc_template_inventory',
+                'items': [{'id': tid, 'name': self.entries_by_id[tid]['name'],
+                           'maps': [{'id': zone, 'name': self.zones[zone]}
+                                    for zone in self.entries_by_id[tid]['maps']]}
+                          for tid in ids[page*PAGE_SIZE:(page+1)*PAGE_SIZE]]}
 
     def metadata(self) -> dict:
         """Expose map counts and provenance without leaking snapshot paths or raw database columns."""
@@ -169,13 +192,16 @@ class CreatureCatalog:
             raise ContentError('地图编号不存在。')
         return number
 
-    def listing(self, query: str = '', map_id: str = 'all', page: int = 0) -> dict:
+    def listing(self, query: str = '', map_id: str = 'all', page: int = 0, template_id: int | None = None) -> dict:
         """Search all aliases and map memberships, returning at most sixty templates per page."""
         if len(query) > 128 or not 0 <= page <= 100000:
             raise ContentError('搜索条件或页码超出范围。')
+        if template_id is not None and (type(template_id) is not int or template_id not in self.records):
+            raise ContentError('NPC／怪物模板不存在。')
         selected = self._map(map_id)
         query = query.strip().lower()
-        entries = [e for e in self.entries if (not query or query in e['search']) and
+        entries = [e for e in self.entries if (template_id is None or e['id'] == template_id) and
+                   (not query or query in e['search']) and
                    (selected == 'all' or selected == 'unplaced' and not e['maps'] or selected in e['maps'])]
         pages = max(1, (len(entries) + PAGE_SIZE - 1) // PAGE_SIZE)
         page = min(page, pages - 1)
