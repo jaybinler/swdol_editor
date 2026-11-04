@@ -11,11 +11,12 @@ import subprocess
 
 from .binary import ContentError, read_bytes
 from .files import atomic_write, output_path
+from .plot_maps import PLOT_FIELDS
 
 MYSQL_CLIENT_SHA256 = '240639f00a54aa6ea7e4e8f312f884678832a19891f0cf38cd3145515c6180a7'
 FIELDS = ('RoleID', 'OriginalObjectID', 'SectionID', 'RoleName', 'NickName',
           *(f'EQArr_{i:02d}' for i in range(10)), 'ReviveSectionID', 'ReviveX', 'ReviveY', 'ReviveZ', 'Hair', 'Face',
-          *(f'Hand_ItemArr_{i:02d}' for i in range(9)), *(f'Hand_CountArr_{i:02d}' for i in range(9)))
+          *(f'Hand_ItemArr_{i:02d}' for i in range(9)), *(f'Hand_CountArr_{i:02d}' for i in range(9)), *PLOT_FIELDS)
 
 
 def connection_binding(config: dict) -> bytes:
@@ -95,6 +96,7 @@ def read_npc_rows(config: dict, password: str) -> list[dict]:
                                   'equipment': [int(row[f'EQArr_{i:02d}']) for i in range(10)],
                                   'hand_items': [int(row[f'Hand_ItemArr_{i:02d}']) for i in range(9)],
                                   'hand_counts': [int(row[f'Hand_CountArr_{i:02d}']) for i in range(9)],
+                                  'plots': [int(row[field]) for field in PLOT_FIELDS],
                                   'revive_map_id': int(row['ReviveSectionID']), 'revive_position': position,
                                   'hair': int(row['Hair']), 'face': int(row['Face'])})
             except (ValueError, UnicodeError) as exc:
@@ -127,15 +129,21 @@ def read_zones(directory: Path) -> tuple[list[dict], list[Path]]:
     return zones, paths
 
 
-def write_snapshot(root: Path, instances: list[dict], zones: list[dict], server_sha: str, source: dict) -> Path:
+def write_snapshot(root: Path, instances: list[dict], zones: list[dict], server_sha: str, source: dict,
+                   *, script_index: dict | None = None) -> Path:
     """Write an immutable candidate snapshot; activation happens only when its settings validation is saved."""
-    raw = json.dumps({'zones': zones, 'instances': instances}, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    data = {'zones': zones, 'instances': instances if script_index is not None else
+            [{k:v for k,v in row.items() if k != 'plots'} for row in instances]}
+    if script_index is not None:
+        data['script_index'] = script_index
+    raw = json.dumps(data, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
     digest = hashlib.sha256(raw).hexdigest()
     identity = hashlib.sha256(raw + server_sha.encode('ascii')).hexdigest()
     # Each validation owns its artifact: even identical rows must never rewrite an active manifest.
     import secrets
     directory = output_path(root, Path('output/editor/database-snapshots') / (identity[:16] + '-' + secrets.token_hex(8)))
-    manifest = {'format': 'xyj-npc-snapshot/v2', 'catalog_sha256': digest, 'catalog_file': f'catalog-{digest}.json',
+    manifest = {'format': 'xyj-npc-snapshot/v3' if script_index is not None else 'xyj-npc-snapshot/v2',
+                'catalog_sha256': digest, 'catalog_file': f'catalog-{digest}.json',
                 'server_object_sha256': server_sha, 'source': source, 'built_at': datetime.now(timezone.utc).isoformat()}
     atomic_write(directory / manifest['catalog_file'], raw)
     atomic_write(directory / 'manifest.json', json.dumps(manifest, ensure_ascii=False).encode('utf-8'))

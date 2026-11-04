@@ -46,9 +46,9 @@
     </aside>
     <aside class="library" id="creature-library" aria-label="NPC与怪物库" hidden>
       <div class="section-title"><h2>NPC与怪物</h2><span id="creature-count" class="mono">—</span></div>
-      <label class="search-label" for="creature-search">搜索名称、模板或实例 ID</label><input id="creature-search" type="search" maxlength="128" placeholder="例如：蝙蝠 / 20000" autocomplete="off">
+      <label class="search-label" for="creature-search">搜索名称或 ID</label><input id="creature-search" type="search" maxlength="128" placeholder="例如：蝙蝠 / 20000" autocomplete="off">
       <label class="search-label" for="creature-map">出现地图</label><select id="creature-map"><option value="all">全部地图</option></select>
-      <p class="muted creature-caption">按服务端存档配置分类；同一模板可出现在多张地图。</p>
+      <p id="creature-map-note" class="muted creature-caption">按存档及已解析脚本分类；同一怪物可出现在多张地图。</p>
       <div id="creature-items" class="items" aria-label="NPC与怪物搜索结果" aria-live="polite"></div>
       <div class="pagination"><button id="creature-prev" aria-label="NPC上一页">←</button><span id="creature-page">—</span><button id="creature-next" aria-label="NPC下一页">→</button></div>
       <button id="creature-retry" hidden>重新读取NPC快照</button>
@@ -88,9 +88,7 @@
       <div class="section-title"><h2 id="creature-properties-title">NPC与怪物详情</h2><span class="tag">只读</span></div>
       <p id="creature-description" class="muted"></p>
       <section class="property-group"><h3>出现地图</h3><div id="creature-maps" class="map-memberships"></div></section>
-      <section class="property-group"><h3>出现记录与装扮</h3><label class="search-label" for="creature-instance">选择存档实例</label><select id="creature-instance"><option value="">模板基础外观</option></select><p id="creature-position" class="property-note"></p><div class="pagination"><button id="instance-prev">上一组</button><span id="instance-page">—</span><button id="instance-next">下一组</button></div></section>
-      <section class="property-group"><h3>所选实例的存档携带</h3><p id="creature-saved-note" class="property-note"></p><div class="drop-table-wrap"><table class="drop-table"><thead><tr><th scope="col">物品</th><th scope="col">存档数量</th><th scope="col">携带槽位</th></tr></thead><tbody id="creature-saved-items"></tbody></table></div></section>
-      <section class="property-group"><h3>模板初始携带规则</h3><p id="creature-drop-note" class="property-note"></p><div class="drop-table-wrap"><table class="drop-table"><thead><tr><th scope="col">候选物品</th><th scope="col">单次生成判定</th><th scope="col">最终击杀掉率</th></tr></thead><tbody id="creature-drops"></tbody></table></div><details><summary>生成判定算法与限制</summary><p id="creature-probability-note" class="property-note"></p></details></section>
+      <section class="property-group"><h3>掉落道具</h3><div class="drop-table-wrap"><table class="drop-table"><thead><tr><th scope="col">道具</th><th scope="col">掉率</th></tr></thead><tbody id="creature-drops"></tbody></table></div></section>
     </section>
   </main>
   <script type="module" src="/app.js"></script>

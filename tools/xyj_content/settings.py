@@ -16,6 +16,7 @@ import time
 from .binary import ContentError, decode_table, read_bytes
 from .catalog import Inputs
 from .database import connection_binding, read_npc_rows, read_zones, write_snapshot
+from .plot_maps import build_script_index
 from .files import atomic_write, output_path, read_json, sha256
 from .models import item_model, texture_png
 from .objects import find_unique
@@ -30,7 +31,7 @@ PATH_FIELDS = (
     ('model_dir', 'MODEL 目录（留空使用客户端目录）', 'directory'),
     ('tex_dir', 'TEX 目录（留空使用客户端目录）', 'directory'),
     ('tsw_dir', 'Tsw 目录（留空使用客户端目录）', 'directory'),
-    ('map_dir', '区域地图配置目录（数据库模式必填）', 'directory'),
+    ('map_dir', '区域与脚本目录（数据库模式必填，含 ASM）', 'directory'),
     ('map_table', 'map.tb（留空使用地图目录）', 'file'),
     ('npc_snapshot', 'NPC 离线快照目录', 'directory'),
 )
@@ -241,9 +242,14 @@ class SettingsController:
                 probe_files.extend([table, *ini_files, Path(db['client'])])
                 instances = read_npc_rows(db, password)
                 checks.append({'name': '数据库认证与只读查询', 'status': 'passed', 'message': f'两张 NPC 表结构通过，读取 {len(instances)} 条记录；未执行写 SQL。'})
+                script_index, script_files = build_script_index(instances, candidate.loaded.server.records, maps)
+                probe_files.extend(script_files)
+                checks.append({'name': '脚本地图关系', 'status': 'passed',
+                               'message': f"已解析 {len(script_index['files'])} 份脚本，保存 {len(script_index['relations'])} 条生成关系。"})
                 source = {'server': config['database']['host'], 'captured_at': datetime.now(timezone.utc).isoformat(),
-                          'scope': '数据库存档配置；不是实时实例', 'consistency': '白名单只读查询生成；未锁库，不是跨表原子快照'}
-                directory = write_snapshot(self.root, instances, zones, candidate.hashes['server_object'], source)
+                          'scope': '存档与已解析脚本配置；不是实时实例', 'consistency': '白名单只读查询生成；未锁库，不是跨表原子快照'}
+                directory = write_snapshot(self.root, instances, zones, candidate.hashes['server_object'], source,
+                                           script_index=script_index)
                 config['npc_snapshot'] = portable_path(self.root, directory)
                 candidate.npc_directory = directory
             else:
@@ -277,6 +283,15 @@ class SettingsController:
                         probe_files.append(resources / 'TEX' / f"ALL{mesh['texture']:05d}.TEX")
             meta = catalog.metadata()
             checks.append({'name': 'NPC快照与角色预览', 'status': 'passed', 'message': f"{meta['templates']} 个模板、{meta['instances']} 条实例；蝙蝠模型加载通过。"})
+            if not meta['script_map_coverage']['available']:
+                checks.append({'name': '脚本地图覆盖', 'status': 'warning',
+                               'message': '旧快照仅含存档地图关系，更新 v3 快照可补充脚本生成地图。'})
+            if config['npc_mode'] == 'database':
+                expected_scripts = {entry['file']: entry['sha256'] for entry in script_index['files']}
+                expected_scripts['NEWLOCALSERVER.EXE'] = script_index['native_sha256']
+                for path in script_files:
+                    if sha256(read_bytes(path)) != expected_scripts[path.name.upper()]:
+                        raise ContentError('校验过程中脚本发生变化，请重新校验。')
             manifest_path = candidate.npc_directory / 'manifest.json'
             manifest = read_json(manifest_path)
             probe_files.extend([manifest_path, candidate.npc_directory / manifest['catalog_file']])

@@ -22,7 +22,7 @@ async function switchLibrary(library) {
   skip.textContent = npc ? '跳到NPC与怪物详情' : '跳到道具属性';
   $('library-items').setAttribute('aria-pressed', String(!npc));
   $('library-creatures').setAttribute('aria-pressed', String(npc));
-  $('preview-scope-note').textContent = npc ? '角色首帧与存档装扮预览；动画、染色、特效及实例缩放尚未完整还原。' :
+  $('preview-scope-note').textContent = npc ? '模板静态首帧预览；动画、染色与动态特效尚未完整还原。' :
     '基础模型预览使用原始材质；装备姿态、染色和特效仍需与游戏内核对。';
   viewer?.clear();
   if (npc) await creatures.open();

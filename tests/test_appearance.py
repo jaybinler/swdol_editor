@@ -10,7 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
-from xyj_content.appearance import PROFILES, equipped_model
+from xyj_content.appearance import PROFILES, automatic_profile, equipped_model
 from xyj_content.binary import ContentError, decode_table
 from xyj_content.models import item_model, read_action, read_mesh, resolve_model, unpack_asset
 from xyj_content.objects import find_unique
@@ -86,6 +86,47 @@ class AppearanceTests(unittest.TestCase):
         self.assertNotIn('texture_url', cloth['meshes'][1])
         self.assertEqual(cloth['meshes'][0]['positions'], armor['meshes'][0]['positions'])
         self.assertEqual(cloth['meshes'][1], armor['meshes'][1])
+
+    def test_3324_auto_uses_actual_fairy_male_mesh_and_keeps_manual_selection(self):
+        record = self.record(3324)
+        before = bytes(record)
+        model = equipped_model(self.client, self.table, record)
+        expected = read_mesh(resolve_model(self.client, read_action(self.client, 9, 0)['frame']))
+        self.assertEqual(model['profile'], 'fairy_male')
+        self.assertEqual(model['profile_label'], '仙族男')
+        self.assertEqual(model['file'], expected['file'])
+        self.assertEqual(model['meshes'][0]['positions'], expected['meshes'][0]['positions'])
+        self.assertEqual(equipped_model(self.client, self.table, record, 'human_male')['profile'], 'human_male')
+        self.assertEqual(record, before)
+
+    def test_auto_matches_all_six_race_sex_combinations(self):
+        bits = {'人族': 0x10000, '魔族': 0x20000, '仙族': 0x40000, '男': 0x8000, '女': 0x4000}
+        for key, profile in PROFILES.items():
+            record = bytearray(self.record(10))
+            mask = struct.unpack_from('<I', record, 356)[0] & ~0x7c000
+            struct.pack_into('<I', record, 356, mask | bits[profile['race']] | bits[profile['sex']])
+            struct.pack_into('<h', record, 80, 1 if profile['sex'] == '男' else 2)
+            with self.subTest(profile=key):
+                self.assertEqual(automatic_profile(record, list(PROFILES)), key)
+
+    def test_auto_unrestricted_and_multiple_matches_are_stable_and_texture_compatible(self):
+        record = self.record(10)
+        self.assertEqual(automatic_profile(record, list(PROFILES)), 'human_male')
+        self.assertEqual(automatic_profile(record, ['fairy_female', 'demon_female']), 'demon_female')
+        self.assertEqual(automatic_profile(record, ['human_female']), 'human_female')
+
+    def test_auto_rejects_unknown_empty_and_conflicting_requirements_without_wrong_fallback(self):
+        record = bytearray(self.record(10)); struct.pack_into('<h', record, 80, 99)
+        with self.assertRaisesRegex(ContentError, '未解析'):
+            automatic_profile(record, list(PROFILES))
+        record = bytearray(self.record(10)); struct.pack_into('<I', record, 356, 0)
+        with self.assertRaisesRegex(ContentError, '没有允许'):
+            automatic_profile(record, list(PROFILES))
+        record = bytearray(self.record(3178))
+        struct.pack_into('<I', record, 356, 0x40000 | 0x8000)
+        struct.pack_into('<h', record, 80, 1)
+        with self.assertRaisesRegex(ContentError, '不兼容'):
+            equipped_model(self.client, self.table, record)
 
     def test_incompatible_body_variant_and_nonwearable_item_fail_explicitly(self):
         with self.assertRaisesRegex(ContentError, '不兼容'):

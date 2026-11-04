@@ -12,6 +12,7 @@ from .binary import ContentError, read_bytes
 from .objects import view_record
 from .models import read_action, read_mesh, resolve_model, item_model
 from .appearance import _body_texture, _attach, HEAD_SLOT, MAINHAND_SLOT, OFFHAND_SLOT
+from .plot_maps import validate_script_index
 
 PAGE_SIZE = 60
 SNAPSHOT = Path('output/editor/npc-snapshot')
@@ -67,7 +68,7 @@ class CreatureCatalog:
             if not re.fullmatch('[0-9a-f]{64}', digest) or manifest.get('catalog_file') != f'catalog-{digest}.json':
                 raise ContentError('NPC 快照文件索引无效。')
             raw = read_bytes(directory / manifest['catalog_file'])
-            if manifest.get('format') not in ('xyj-npc-snapshot/v1', 'xyj-npc-snapshot/v2') or hashlib.sha256(raw).hexdigest() != manifest['catalog_sha256']:
+            if manifest.get('format') not in ('xyj-npc-snapshot/v1', 'xyj-npc-snapshot/v2', 'xyj-npc-snapshot/v3') or hashlib.sha256(raw).hexdigest() != manifest['catalog_sha256']:
                 raise ContentError('NPC 快照校验失败，请重新生成经过核验的快照。')
             if manifest['server_object_sha256'] != hashlib.sha256(loaded.blobs[0]).hexdigest():
                 raise ContentError('NPC 快照与服务端本地基线不一致，请更新快照。')
@@ -97,8 +98,13 @@ class CreatureCatalog:
             for instance in data['instances']:
                 expected = {'key', 'id', 'template_id', 'map_id', 'name', 'nickname', 'equipment',
                             'revive_map_id', 'revive_position', 'hair', 'face'}
-                if manifest['format'] == 'xyj-npc-snapshot/v2':
+                if manifest['format'] in ('xyj-npc-snapshot/v2', 'xyj-npc-snapshot/v3'):
                     expected.update(('hand_items', 'hand_counts'))
+                if manifest['format'] == 'xyj-npc-snapshot/v3':
+                    expected.add('plots')
+                    plots = instance.get('plots')
+                    if not isinstance(plots, list) or len(plots) != 4 or any(type(v) is not int or not -2147483648 <= v <= 2147483647 for v in plots):
+                        raise ContentError('NPC 脚本入口无效。')
                 if set(instance) != expected:
                     raise ContentError('NPC 实例包含未批准字段或缺少字段。')
                 if 'hand_items' in instance:
@@ -123,11 +129,21 @@ class CreatureCatalog:
                 self.zones.setdefault(zone, f'地图 {zone}（名称未确认）')
         except (KeyError, TypeError) as exc:
             raise ContentError('NPC 实例快照结构无效。') from exc
+        self.map_memberships = {tid: {r['map_id'] for r in rows} for tid, rows in self.instances.items()}
+        self.script_relations = defaultdict(list)
+        self.script_coverage = {'available': False, 'relations': 0}
+        if manifest['format'] == 'xyj-npc-snapshot/v3':
+            rows = validate_script_index(data.get('script_index'), self.roles, self.records)
+            for row in rows:
+                self.map_memberships.setdefault(row['template_id'], set()).add(row['map_id'])
+                self.script_relations[row['template_id']].append(row)
+            self.script_coverage = {'available': True, 'relations': len(rows),
+                                    'diagnostics': data['script_index']['diagnostics']}
         self.entries = []
         for tid, record in self.records.items():
             instances = self.instances[tid]
             name = self.definitions[tid].name
-            maps = sorted({r['map_id'] for r in instances})
+            maps = sorted(self.map_memberships.get(tid, ()))
             aliases = sorted({r['name'] for r in instances if r['name'] != name})
             self.entries.append({'id': tid, 'name': name, 'maps': maps, 'instance_count': len(instances),
                                  'search': ' '.join([name, str(tid), *aliases, *(str(r['id']) for r in instances)]).lower()})
@@ -136,6 +152,7 @@ class CreatureCatalog:
     def metadata(self) -> dict:
         """Expose map counts and provenance without leaking snapshot paths or raw database columns."""
         return {'source': self.source, 'templates': len(self.records), 'instances': len(self.roles),
+                'script_map_coverage': self.script_coverage,
                 'unplaced': sum(not entry['maps'] for entry in self.entries),
                 'maps': [{'id': key, 'name': name, 'instances': self.map_counts[key],
                           'templates': sum(key in e['maps'] for e in self.entries)}
@@ -182,8 +199,11 @@ class CreatureCatalog:
         view = self.definitions[template_id]
         return {'id': template_id, 'name': view.name, 'description': view.description,
                 'maps': [{'id': key, 'name': self.zones[key],
-                          'instances': sum(r['map_id'] == key for r in self.instances[template_id])}
-                         for key in sorted({r['map_id'] for r in self.instances[template_id]})],
+                          'instances': sum(r['map_id'] == key for r in self.instances[template_id]),
+                          'sources': (['saved'] if any(r['map_id'] == key for r in self.instances[template_id]) else []) +
+                                     (['script'] if any(r['map_id'] == key for r in self.script_relations[template_id]) else []),
+                          'script_sources': [r for r in self.script_relations[template_id] if r['map_id'] == key]}
+                         for key in sorted(self.map_memberships.get(template_id, ()))],
                 'instances': [{**{k:v for k,v in r.items() if k not in ('hand_items', 'hand_counts')},
                                'saved_inventory': saved_inventory(r, self.definitions)}
                               for r in instances[page*PAGE_SIZE:(page+1)*PAGE_SIZE]], 'instance_total': len(instances),
@@ -215,7 +235,7 @@ class CreatureCatalog:
         else:
             choose = lambda offset: next((v for v in struct.unpack_from('<5h', record, offset) if v > 0), -1)
             equipment = [choose(218), struct.unpack_from('<h', record, 228)[0], choose(240), choose(230)]
-            warnings.append('模板外观使用首个可用头部与手持变体；选择出现记录可查看存档装扮。')
+            warnings.append('模板外观使用首个可用头部与手持变体。')
         for index, object_id in enumerate(equipment):
             if object_id <= 0:
                 continue

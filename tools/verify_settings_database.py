@@ -69,10 +69,13 @@ def main():
         assert synthetic.encode() not in controller.path.read_bytes()
         meta = reopened.workspace.creatures().metadata()
         assert meta['instances'] == 10429, meta
+        assert meta['script_map_coverage']['available'], meta
+        assert [m['id'] for m in reopened.workspace.creatures().detail(20799)['maps']] == [23]
         after = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
         assert after == hashes
         report = {'passed': True, 'transport': 'local named pipe; networking disabled', 'instances': meta['instances'],
                   'templates': meta['templates'], 'checks': result['checks'], 'source_hashes_unchanged': hashes,
+                  'script_map_relations': meta['script_map_coverage']['relations'], 'monster_20799_maps': [23],
                   'production_database_accessed': False, 'fixture': str(destination.relative_to(root))}
         report['password_protected_and_export_excludes_secret'] = True
         write_json(root / 'research/2026-11-03/settings_database_verification.json', report)

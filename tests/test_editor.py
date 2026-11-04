@@ -180,6 +180,13 @@ class HTTPBoundaryTests(unittest.TestCase):
         with self.assertRaises(HTTPError) as failure: urlopen(request)
         self.assertEqual(failure.exception.code, 403)
 
+    def test_auto_equipped_profile_tracks_item_requirements_between_requests(self):
+        for item, profile, expected in ((3324, 'auto', 'fairy_male'), (3324, 'human_female', 'human_female'),
+                                        (10, 'auto', 'human_male'), (3324, 'auto', 'fairy_male')):
+            with self.subTest(item=item, profile=profile):
+                model = json.load(urlopen(self.url + f'/api/model/{item}?mode=equipped&profile={profile}'))
+                self.assertEqual(model['profile'], expected)
+
     def test_static_allowlist_does_not_expose_game_or_draft_files(self):
         for path in ('/../swdol/Main/Object.dbf', '/output/editor/draft.json', '/vendor/../../tools/editor_server.py'):
             with self.subTest(path=path), self.assertRaises(HTTPError) as failure: urlopen(self.url + path)
