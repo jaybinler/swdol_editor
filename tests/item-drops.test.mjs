@@ -31,6 +31,20 @@ const payload = (id, name = '测试怪物', extra = {}) => ({item_id: id, page: 
   items: [{id: 20003, name, maps: [{id: 2, name: '测试地图'}]}], workspace_generation: null, ...extra});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return {promise, resolve, reject}; };
 
+test('a configured pending source replaces empty-state text and rejects late baseline responses', async () => {
+  const pending = deferred(), dom = root(), opened = [];
+  const view = new ItemDropSources({root:dom,node,getGeneration:()=>null,api:()=>pending.promise,
+    openCreature:async id=>opened.push(id)});
+  const old = view.show({id:319,draft:true});
+  view.show({id:319,draft:true,planned:{id:20071,name:'盘古',map:'通天柱',percent:5.0048828125},unsaved:false});
+  pending.resolve(payload(319,'',{total:0,items:[]})); await old;
+  assert.match(dom.getElementById('item-drop-rows').textContent,/盘古.*20071.*通天柱/);
+  assert.match(dom.getElementById('item-drop-note').textContent,/已暂存，待配套发布/);
+  assert.match(dom.getElementById('item-drop-count').textContent,/待发布/);
+  await dom.getElementById('item-drop-rows').querySelectorAll('button')[0].listeners.click();
+  assert.deepEqual(opened,[20071]);
+});
+
 test('late success and late failure cannot overwrite the current item', async () => {
   const first = deferred(), second = deferred(), dom = root();
   const view = new ItemDropSources({root: dom, node, getGeneration: () => null,
@@ -121,4 +135,131 @@ test('exact NPC navigation resets old filters and discards out-of-order selectio
     assert.equal(browser.exactTemplateId, null);
     browser.cancel();
   } finally { globalThis.document = previous; }
+});
+
+test('reset candidate detail keeps duplicate slots, labels provenance, links exact IDs and clears stale rows', async () => {
+  const previousDocument=globalThis.document, previousHistory=globalThis.history, dom=root();
+  globalThis.document=dom; globalThis.history={replaceState(){}};
+  try {
+    const opened=[];
+    const detail={id:20088,name:'器奴',description:'模板说明',maps:[{id:18,name:'通天柱',sources:['reset'],
+      reset_sources:[{path:[20009,20088]}]}],inventory:[],reset_candidates_available:true,
+      reset_candidates:[{slot:1,raw_id:20009,id:20009,name:'器奴',is_self:false,valid:true},
+        {slot:2,raw_id:20009,id:20009,name:'器奴',is_self:false,valid:true},
+        {slot:3,raw_id:-1,id:20088,name:'器奴',is_self:true,valid:true},
+        {slot:4,raw_id:20982,id:20982,name:'极·器奴',is_self:false,valid:true},
+        {slot:5,raw_id:0,id:0,name:'无效',is_self:false,valid:false}]};
+    const browser=new CreatureBrowser({node,getViewer:()=>null,status(){},openItem:async()=>{},api:async()=>detail});
+    browser.active=true;
+    await browser.select(20088);
+    assert.match(dom.getElementById('creature-maps').textContent,/#20009 → #20088/);
+    assert.match(dom.getElementById('creature-maps').textContent,/可能出现/);
+    assert.equal(dom.getElementById('creature-resets').children.length,5);
+    assert.match(dom.getElementById('creature-resets').textContent,/-1：当前模板/);
+    assert.match(dom.getElementById('creature-resets').textContent,/无效候选 #0/);
+    browser.openTemplate=async id=>opened.push(id);
+    await dom.getElementById('creature-resets').querySelectorAll('button')[1].listeners.click();
+    assert.deepEqual(opened,[20009]);
+    browser.clearDetail();
+    assert.equal(dom.getElementById('creature-resets').children.length,0);
+    assert.equal(dom.getElementById('creature-reset-note').textContent,'');
+    browser.cancel();
+  } finally {
+    globalThis.document=previousDocument;
+    if(previousHistory===undefined) delete globalThis.history; else globalThis.history=previousHistory;
+  }
+});
+
+test('a filtered exact ID shows its evidenced map and offers navigation without claiming it is unplaced', async () => {
+  const previousDocument=globalThis.document, previousHistory=globalThis.history, dom=root();
+  const urls=[], statuses=[], pending=deferred(), paths=[];
+  globalThis.document=dom; globalThis.history={replaceState(_state,_title,url){urls.push(url);}};
+  try {
+    const browser=new CreatureBrowser({node,getViewer:()=>null,status:text=>statuses.push(text),openItem:async()=>{},
+      api:async path=>{paths.push(path);return path.includes('map=all') ?
+        {items:[{id:20048,name:'阿修罗',maps:[16]}]} : pending.promise;}});
+    browser.active=true; browser.meta={maps:[{id:16,name:'九曲结界'}]}; browser.selected={id:20968};
+    dom.getElementById('preview-title').textContent='旧怪物';
+    dom.getElementById('creature-search').value='20048'; dom.getElementById('creature-map').value='unplaced';
+    const request=browser.list();
+    assert.equal(browser.selected,null);
+    assert.doesNotMatch(dom.getElementById('preview-title').textContent,/旧怪物/);
+    assert.match(urls.at(-1),/map=unplaced&q=20048/); assert.doesNotMatch(urls.at(-1),/npc=/);
+    pending.resolve({page:0,pages:1,total:0,items:[]}); await request;
+    assert.equal(dom.getElementById('creature-map').value,'unplaced');
+    assert.match(dom.getElementById('creature-items').textContent,/#20048 阿修罗已记录地图：九曲结界/);
+    assert.match(statuses.at(-1),/当前地图筛选未包含该编号/);
+    assert.equal(paths.length,2);
+    const opened=[]; browser.openTemplate=async id=>opened.push(id);
+    await dom.getElementById('creature-items').querySelectorAll('button')[0].listeners.click();
+    assert.deepEqual(opened,[20048]); browser.cancel();
+  } finally {globalThis.document=previousDocument;globalThis.history=previousHistory;}
+});
+
+test('late map lookup cannot overwrite a new search, its URL or status', async () => {
+  const previousDocument=globalThis.document, previousHistory=globalThis.history, dom=root();
+  const pending=deferred(), statuses=[], urls=[];
+  globalThis.document=dom; globalThis.history={replaceState(_state,_title,url){urls.push(url);}};
+  try {
+    const browser=new CreatureBrowser({node,getViewer:()=>null,status:text=>statuses.push(text),openItem:async()=>{},
+      api:async path=>path.includes('map=all') ? pending.promise : {page:0,pages:1,total:0,items:[]}});
+    browser.active=true; browser.meta={maps:[{id:16,name:'九曲结界'}]};
+    dom.getElementById('creature-search').value='20048'; dom.getElementById('creature-map').value='unplaced';
+    const old=browser.list(); await new Promise(resolve=>setImmediate(resolve));
+    dom.getElementById('creature-search').value='不存在的名字'; const latest=browser.list(); await latest;
+    pending.resolve({items:[{id:20048,name:'阿修罗',maps:[16]}]}); await old;
+    assert.doesNotMatch(dom.getElementById('creature-items').textContent,/阿修罗/);
+    assert.match(statuses.at(-1),/当前地图筛选下没有匹配/);
+    assert.match(decodeURIComponent(urls.at(-1)),/q=不存在的名字/);
+    assert.equal(dom.getElementById('creature-items').attributes['aria-busy'],'false'); browser.cancel();
+  } finally {globalThis.document=previousDocument;globalThis.history=previousHistory;}
+});
+
+test('empty ID lookup and failed lookup never invent map relationships', async () => {
+  const previousDocument=globalThis.document, dom=root(); globalThis.document=dom;
+  try {
+    let fail=false;
+    const browser=new CreatureBrowser({node,getViewer:()=>null,status(){},openItem:async()=>{},api:async path=>{
+      if(path.includes('map=all')) {if(fail) throw new Error('快照读取失败'); return {items:[]};}
+      return {page:0,pages:1,total:0,items:[]};
+    }});
+    browser.active=true; dom.getElementById('creature-search').value='29999'; dom.getElementById('creature-map').value='unplaced';
+    await browser.list();
+    assert.equal(dom.getElementById('creature-items').querySelectorAll('button').length,0);
+    assert.doesNotMatch(dom.getElementById('creature-items').textContent,/已记录地图/);
+    fail=true; await browser.list();
+    assert.match(dom.getElementById('creature-items').textContent,/无法核对.*快照读取失败/);
+    assert.equal(dom.getElementById('creature-items').querySelectorAll('button').length,0); browser.cancel();
+  } finally {globalThis.document=previousDocument;}
+});
+
+test('search input immediately clears old details and rejects their in-flight response', async () => {
+  const previousDocument=globalThis.document, previousHistory=globalThis.history, dom=root(), pending=deferred();
+  globalThis.document=dom; globalThis.history={replaceState(){}};
+  try {
+    const browser=new CreatureBrowser({node,getViewer:()=>null,status(){},openItem:async()=>{},api:()=>pending.promise});
+    browser.active=true; dom.getElementById('creature-map').value='unplaced';
+    const request=browser.select(20968);
+    dom.getElementById('creature-search').value='20048'; dom.getElementById('creature-search').listeners.input();
+    assert.equal(browser.selected,null);
+    assert.match(dom.getElementById('creature-items').textContent,/正在查询/);
+    pending.resolve({id:20968,name:'旧怪物',maps:[],inventory:[]}); await request;
+    assert.doesNotMatch(dom.getElementById('preview-title').textContent,/旧怪物/);
+    assert.equal(browser.selected,null); browser.cancel();
+  } finally {globalThis.document=previousDocument;globalThis.history=previousHistory;}
+});
+
+test('summoned creature map shows caster and skill evidence and opens the exact caster ID', async () => {
+  const previousDocument=globalThis.document, previousHistory=globalThis.history, dom=root();
+  globalThis.document=dom;globalThis.history={replaceState(){}};
+  try {
+    const detail={id:20355,name:'魔礼海元神',maps:[{id:18,name:'通天柱',sources:['summon'],
+      summon_sources:[{caster_template_id:20086,caster_name:'魔礼海',skill_id:11058,skill_name:'元神出窍'}]}],inventory:[]};
+    const browser=new CreatureBrowser({node,getViewer:()=>null,status(){},openItem:async()=>{},api:async()=>detail});
+    browser.active=true;await browser.select(20355);
+    assert.match(dom.getElementById('creature-maps').textContent,/通天柱.*技能召唤.*#20086 魔礼海.*#11058 元神出窍/);
+    const opened=[];browser.openTemplate=async id=>opened.push(id);
+    await dom.getElementById('creature-maps').querySelectorAll('button')[1].listeners.click();
+    assert.deepEqual(opened,[20086]);browser.cancel();
+  } finally {globalThis.document=previousDocument;globalThis.history=previousHistory;}
 });

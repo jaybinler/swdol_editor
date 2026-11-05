@@ -55,7 +55,7 @@
       <div class="section-title"><h2>NPC与怪物</h2><span id="creature-count" class="mono">—</span></div>
       <label class="search-label" for="creature-search">搜索名称或 ID</label><input id="creature-search" type="search" maxlength="128" placeholder="例如：蝙蝠 / 20000" autocomplete="off">
       <label class="search-label" for="creature-map">出现地图</label><select id="creature-map"><option value="all">全部地图</option></select>
-      <p id="creature-map-note" class="muted creature-caption">按存档及已解析脚本分类；同一怪物可出现在多张地图。</p>
+      <p id="creature-map-note" class="muted creature-caption">按存档、脚本、刷新候选及技能召唤分类；同一怪物可关联多张地图。</p>
       <div id="creature-items" class="items" aria-label="NPC与怪物搜索结果" aria-live="polite"></div>
       <div class="pagination"><button id="creature-prev" aria-label="NPC上一页">←</button><span id="creature-page">—</span><button id="creature-next" aria-label="NPC下一页">→</button></div>
       <button id="creature-retry" hidden>重新读取NPC快照</button>
@@ -76,7 +76,7 @@
         <div class="pagination"><button id="item-drop-prev" aria-label="掉落怪物上一页" disabled>上一页</button><span id="item-drop-page">—</span><button id="item-drop-next" aria-label="掉落怪物下一页" disabled>下一页</button></div>
         <button id="item-drop-retry" hidden>重新读取掉落怪物</button>
       </section>
-      <section class="draft-area" aria-labelledby="draft-title"><div class="section-title"><h2 id="draft-title">补丁草稿</h2><span id="draft-count" class="mono">0 个操作</span></div><p class="muted">核对草稿后点击“导出并覆盖双端文件”。覆盖前备份到本地，仅保留最近一次备份。</p><div id="draft-list"></div><div id="export-result"></div></section>
+      <section class="draft-area" aria-labelledby="draft-title"><div class="section-title"><h2 id="draft-title">补丁草稿</h2><span id="draft-count" class="mono">0 个操作</span></div><p class="muted">核对草稿后点击“导出并覆盖双端文件”。包含所选商店／任务脚本；覆盖前备份到本地，仅保留最近一次备份。</p><div id="draft-list"></div><div id="export-result"></div></section>
     </section>
     <section class="properties" id="properties" aria-labelledby="properties-title">
       <div class="section-title"><h2 id="properties-title">道具属性</h2><span id="edit-state" class="tag">加载中</span></div>
@@ -101,6 +101,36 @@
         <div class="section-title stats-title"><h3>基础属性</h3><span class="muted">已确认字段</span></div><div id="stats" class="stats"></div>
         <div class="section-title stats-title"><h3>抗性</h3><span class="muted">-128 至 127</span></div><div id="resistance-stats" class="stats"></div>
         <div class="section-title stats-title"><h3>回复属性</h3><span class="muted">-32768 至 32767</span></div><div id="recovery-stats" class="stats"></div>
+        <section id="acquisition" class="acquisition" aria-labelledby="acquisition-title">
+          <h3 id="acquisition-title">获取途径</h3>
+          <p class="property-note">可同时添加怪物掉落、商店购买和任务奖励。暂存后与道具配套发布。</p>
+          <p id="acquisition-status" class="property-note" role="status" aria-live="polite">正在读取可配置来源…</p>
+          <button id="acquisition-retry" type="button" hidden>重新读取获取途径</button>
+          <div id="acquisition-existing" class="property-note"></div>
+          <label class="filter"><input id="acquisition-drop-enabled" type="checkbox"> 添加怪物掉落</label>
+          <div id="acquisition-drop-fields" hidden>
+            <label for="acquisition-map">出现地图</label><select id="acquisition-map"><option value="">选择地图</option></select>
+            <label for="acquisition-monster-search">查找怪物</label><input id="acquisition-monster-search" type="search" placeholder="名称或编号" maxlength="128">
+            <label for="acquisition-monster">掉落怪物（最多一种）</label><select id="acquisition-monster"><option value="">选择怪物</option></select>
+            <p id="acquisition-map-note" class="property-note"></p>
+            <label for="acquisition-percent">掉落率（%）</label><input id="acquisition-percent" type="number" min="0" max="100" step="any" value="10">
+            <p id="acquisition-chance" class="property-note" aria-live="polite"></p>
+            <p class="property-note">成功掉落固定 1 件。地图用于选择来源；同编号怪物共用掉落配置。</p>
+          </div>
+          <details class="acquisition-channel" id="acquisition-shop-panel"><summary>商店购买 <span id="acquisition-shop-count"></span></summary>
+            <p class="property-note">加入已有商品表，保留原商品。购买价格沿用道具模板与游戏原有定价规则。</p>
+            <label for="acquisition-shop-search">查找商店／商品</label><input id="acquisition-shop-search" type="search" maxlength="128" placeholder="NPC、商品名称或脚本编号">
+            <label for="acquisition-shop">商品配置节点</label><select id="acquisition-shop"></select>
+            <button id="acquisition-add-shop" type="button">添加商店</button><ul id="acquisition-shop-list" class="acquisition-list"></ul>
+          </details>
+          <details class="acquisition-channel" id="acquisition-reward-panel"><summary>任务奖励 <span id="acquisition-reward-count"></span></summary>
+            <p class="property-note">在已有物品奖励节点成功后追加，沿用原任务条件和领取规则。请按原奖励及关联 NPC 核对节点。</p>
+            <label for="acquisition-reward-search">查找奖励／NPC</label><input id="acquisition-reward-search" type="search" maxlength="128" placeholder="原奖励名称、NPC 或脚本编号">
+            <label for="acquisition-reward">物品奖励节点</label><select id="acquisition-reward"></select>
+            <label for="acquisition-reward-count-input">每次奖励数量</label><input id="acquisition-reward-count-input" type="number" min="1" max="32767" step="1" value="1">
+            <button id="acquisition-add-reward" type="button">添加任务奖励</button><ul id="acquisition-reward-list" class="acquisition-list"></ul>
+          </details>
+        </section>
         <details class="raw"><summary>外观关联（只读）</summary><p id="appearance"></p><p class="muted">保留外观及未知字段。当前版本不写入模型文件。</p></details>
         <p id="form-error" class="error" role="alert"></p>
         <div class="form-actions" id="form-actions" hidden><button id="stage" type="submit" class="primary">暂存修改</button><button id="restore" type="button">恢复表单</button><button id="cancel-edit" type="button">返回查看</button></div>
@@ -111,6 +141,10 @@
       <div class="section-title"><h2 id="creature-properties-title">NPC与怪物详情</h2><span class="tag">只读</span></div>
       <p id="creature-description" class="muted"></p>
       <section class="property-group"><h3>出现地图</h3><div id="creature-maps" class="map-memberships"></div></section>
+      <details class="property-group" id="creature-reset-panel"><summary>刷新候选（5 槽）</summary>
+        <p id="creature-reset-note" class="property-note"></p>
+        <div class="drop-table-wrap"><table class="drop-table reset-table"><thead><tr><th scope="col">槽位</th><th scope="col">候选怪物</th></tr></thead><tbody id="creature-resets"></tbody></table></div>
+      </details>
       <section class="property-group"><h3>掉落道具</h3><div class="drop-table-wrap"><table class="drop-table"><thead><tr><th scope="col">道具</th><th scope="col">掉率</th></tr></thead><tbody id="creature-drops"></tbody></table></div></section>
     </section>
   </main>

@@ -1,4 +1,4 @@
-"""Explicit, baseline-bound three-file deployment with one durable local rollback set."""
+"""Baseline-bound paired item and acquisition-script deployment with one durable rollback set."""
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -17,6 +17,15 @@ from .files import atomic_write, output_path, read_json, sha256, write_json
 from .patch import PAYLOAD_PATHS
 
 BACKUP_PATHS = {**PAYLOAD_PATHS, 'settings': 'state/settings.json', 'draft': 'state/draft.json'}
+
+
+def _backup_relative(role: str) -> str:
+    from .acquisition import SCRIPT_NAME
+    if role in BACKUP_PATHS:
+        return BACKUP_PATHS[role]
+    if role.startswith('script:') and SCRIPT_NAME.fullmatch(role[7:]):
+        return 'server/qingfeng/ASM/' + role[7:]
+    raise ContentError('备份文件角色无效。')
 
 
 def deployment_targets(root: Path, config: dict) -> dict:
@@ -127,12 +136,20 @@ def _validate_journal(root: Path, folder: Path) -> dict:
     if manifest.get('format') != 'xyj-auto-deploy/v1' or manifest.get('root') != str(root.resolve()):
         raise ContentError('自动覆盖备份记录无效，请保留备份并检查。')
     entries = manifest.get('entries', [])
-    if [entry.get('role') for entry in entries] != [*PAYLOAD_PATHS, 'settings', 'draft']:
+    roles = [entry.get('role', '') for entry in entries]
+    scripts = roles[3:-2]
+    if (roles[:3] != list(PAYLOAD_PATHS) or roles[-2:] != ['settings', 'draft'] or
+            len(roles) != len(set(roles)) or len(scripts) > 64 or
+            any(not role.startswith('script:') for role in scripts)):
         raise ContentError('自动覆盖备份文件清单无效。')
     for index, entry in enumerate(entries):
         target = Path(entry['target'])
-        if not target.is_absolute() or entry['backup'] != BACKUP_PATHS[entry['role']]:
+        if not target.is_absolute() or entry['backup'] != _backup_relative(entry['role']):
             raise ContentError('自动覆盖备份路径无效。')
+        if entry['role'].startswith('script:'):
+            expected = Path(entries[0]['target']).parent / 'ASM' / entry['role'][7:]
+            if target.resolve() != expected.resolve():
+                raise ContentError('脚本恢复位置必须在所选服务端的 ASM 目录。')
         if entry['role'] == 'settings' and target != root.resolve() / 'output/editor/settings.json':
             raise ContentError('设置恢复位置无效。')
         if entry['role'] == 'draft' and (not target.is_relative_to(root.resolve() / 'output/editor/workspaces') or target.name != 'draft.json'):
@@ -205,22 +222,32 @@ def recover_deployment(root: Path):
             _recover_locked(root)
 
 
-def _snapshot_for_items(controller, loaded, directory: Path) -> Path:
-    """Rebind an immutable NPC projection only after proving all non-item records unchanged."""
+def _snapshot_for_items(controller, loaded, directory: Path, *, script_directory: Path | None = None) -> Path:
+    """Rebind after proving NPC changes match the planned drops; refresh changed script evidence."""
     from .creatures import CreatureCatalog
     old = controller.workspace
     nonitems = lambda table: tuple(record for record in table.records if struct.unpack_from('<H', record, 8)[0] != 2)
-    if nonitems(old.loaded.server) != nonitems(loaded.server):
-        raise ContentError('NPC或脚本模板发生变化，不能沿用当前快照。')
-    old.creatures()  # Validate the existing projection before deriving another binding.
+    from .acquisition import apply_drop_edits
+    expected, drop_changes = apply_drop_edits(old.loaded, old.loaded.server, old.edits)
+    if nonitems(expected) != nonitems(loaded.server):
+        raise ContentError('NPC模板含获取配置之外的变化，不能沿用当前快照。')
+    CreatureCatalog(controller.root, old.loaded, client=old.client, directory=old.npc_directory)
     manifest = read_json(old.npc_directory / 'manifest.json')
     raw = read_bytes(old.npc_directory / manifest['catalog_file'])
+    if script_directory is not None and manifest['format'] == 'xyj-npc-snapshot/v3':
+        from .plot_maps import build_script_index
+        data = json.loads(raw)
+        data['script_index'], _ = build_script_index(data['instances'], loaded.server.records, script_directory)
+        raw = json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        manifest['catalog_sha256'] = sha256(raw)
+        manifest['catalog_file'] = f'catalog-{sha256(raw)}.json'
     directory.mkdir(parents=True, exist_ok=False)
     atomic_write(directory / manifest['catalog_file'], raw)
     manifest['server_object_sha256'] = sha256(loaded.blobs[0])
     manifest['source'] = {**manifest['source'], 'item_patch_rebase': {
-        'previous_server_sha256': old.hashes['server_object'], 'all_nonitem_records_unchanged': True,
-        'catalog_sha256_unchanged': manifest['catalog_sha256']}}
+        'previous_server_sha256': old.hashes['server_object'], 'all_nonitem_records_unchanged': not drop_changes,
+        'npc_inventory_updates': drop_changes,
+        'script_index_refreshed': script_directory is not None and manifest['format'] == 'xyj-npc-snapshot/v3'}}
     write_json(directory / 'manifest.json', manifest)
     CreatureCatalog(controller.root, loaded, client=old.client, directory=directory)
     return directory
@@ -243,16 +270,39 @@ def apply_workspace(controller, revision: int) -> dict:
         pending = output_path(root, Path('output/editor/pending'))
         pending.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=pending, prefix='apply-') as temporary:
-            exported = export_editor_patch(Path(temporary), state.loaded, state.edits)
+            from .acquisition import has_acquisition, NATIVE_SHA256
+            acquisition = state.acquisition() if has_acquisition(state.edits) else None
+            exported = export_editor_patch(Path(temporary), state.loaded, state.edits, acquisition=acquisition)
             package = Path(exported['path'])
             blobs = {key: read_bytes(package / relative) for key, relative in PAYLOAD_PATHS.items()}
+            script_meta = read_json(package / 'manifest.json').get('scripts', {})
+            script_directory = None
+            if script_meta:
+                actual_directory = targets['server_object'].parent
+                if sha256(read_bytes(actual_directory / 'NewLocalServer.exe')) != NATIVE_SHA256:
+                    raise ContentError('覆盖目标服务端程序版本未核验。')
+                # A refreshed map index must describe the target's complete script set.
+                for filename, original in acquisition.scripts.items():
+                    if read_bytes(actual_directory / 'ASM' / filename) != original:
+                        raise ContentError(f'目标脚本与读取基线不一致：{filename}')
+                script_directory = Path(temporary) / 'script-input'
+                atomic_write(script_directory / 'NewLocalServer.exe', read_bytes(actual_directory / 'NewLocalServer.exe'))
+                for filename, original in acquisition.scripts.items():
+                    atomic_write(script_directory / 'ASM' / filename, original)
+                for filename, entry in sorted(script_meta.items()):
+                    role = 'script:' + filename
+                    targets[role] = (actual_directory / 'ASM' / filename).resolve()
+                    blobs[role] = read_bytes(package / entry['path'])
+                    atomic_write(script_directory / 'ASM' / filename, blobs[role])
             loaded = load_inputs(Inputs(*(package / relative for relative in PAYLOAD_PATHS.values())))
             snapshot = output_path(root, Path('output/editor/applied-snapshots') / uuid.uuid4().hex)
-            _snapshot_for_items(controller, loaded, snapshot)
+            _snapshot_for_items(controller, loaded, snapshot, script_directory=script_directory)
         config = {**controller.config, 'server_object': portable_path(root, targets['server_object']),
                   'client_object': '', 'language': '', 'npc_snapshot': portable_path(root, snapshot)}
-        hashes = {key: sha256(blob) for key, blob in blobs.items()}
-        identity = json.dumps({'hashes': hashes, 'paths': [str(path.resolve()) for path in targets.values()]}, sort_keys=True)
+        if script_meta:
+            config['map_dir'] = portable_path(root, targets['server_object'].parent)
+        hashes = {key: sha256(blobs[key]) for key in PAYLOAD_PATHS}
+        identity = json.dumps({'hashes': hashes, 'paths': [str(targets[key].resolve()) for key in PAYLOAD_PATHS]}, sort_keys=True)
         draft = output_path(root, Path('output/editor/workspaces') / sha256(identity.encode('utf-8')) / 'draft.json')
         if draft.exists() and read_json(draft).get('edits'):
             raise ContentError('覆盖后的基线已有未完成草稿，已停止以保留它；请先核对该工作区。')
@@ -264,14 +314,17 @@ def apply_workspace(controller, revision: int) -> dict:
         excluded.add(str((state.npc_directory / old_manifest['catalog_file']).resolve()))
         fingerprints = [entry for entry in old_doc.get('validated_files', [])
                         if str((root / entry['path']).resolve()) not in excluded]
-        fingerprints += [{'path': portable_path(root, path), 'sha256': hashes[key]} for key, path in targets.items()]
+        fingerprints += [{'path': portable_path(root, path), 'sha256': sha256(blobs[key])} for key, path in targets.items()]
+        if script_meta:
+            fingerprints += [{'path': portable_path(root, targets['server_object'].parent / 'NewLocalServer.exe'),
+                              'sha256': NATIVE_SHA256}]
         new_manifest = read_json(snapshot / 'manifest.json')
         fingerprints += [{'path': portable_path(root, p), 'sha256': sha256(read_bytes(p))}
                          for p in (snapshot / 'manifest.json', snapshot / new_manifest['catalog_file'])]
         document = {**old_doc, 'format': 'xyj-settings/v1', 'config': config,
                     'validated_files': fingerprints, 'saved_at': datetime.now(timezone.utc).isoformat()}
         new_draft = {'format': 'xyj-editor-draft/v1', 'sources': hashes, 'revision': state.revision + 1, 'edits': []}
-        payloads = [(key, targets[key], blobs[key]) for key in PAYLOAD_PATHS]
+        payloads = [(key, targets[key], blobs[key]) for key in targets]
         payloads += [('settings', controller.path, json.dumps(document, ensure_ascii=False, indent=2).encode('utf-8')),
                      ('draft', draft, json.dumps(new_draft, ensure_ascii=False, indent=2).encode('utf-8'))]
         folder = _journal(root)
@@ -282,8 +335,10 @@ def apply_workspace(controller, revision: int) -> dict:
             original = _current(target)
             if role in PAYLOAD_PATHS and original != state.loaded.blobs[list(PAYLOAD_PATHS).index(role)]:
                 raise ContentError(f'覆盖前文件发生变化：{target}')
+            if role.startswith('script:') and (original is None or sha256(original) != script_meta[role[7:]]['source_sha256']):
+                raise ContentError(f'覆盖前脚本发生变化：{target}')
             entry = {'role': role, 'target': str(target), 'before': sha256(original) if original is not None else None,
-                     'after': sha256(blob), 'backup': BACKUP_PATHS[role],
+                     'after': sha256(blob), 'backup': _backup_relative(role),
                      'staged': str(target.parent / ('.xyj-apply-' + uuid.uuid4().hex))}
             if original is not None:
                 atomic_write(next_backup / entry['backup'], original)

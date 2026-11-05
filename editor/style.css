@@ -519,6 +519,11 @@ select:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
 }
 .map-memberships { display:flex; flex-wrap:wrap; gap:6px; }
 .map-memberships button { font-size:12px; min-height:34px; padding:5px 8px; text-align:left; }
+.map-reset-membership { min-width:0; max-width:100%; }
+.map-reset-source { font-size:12px; overflow-wrap:anywhere; margin-top:5px; }
+#creature-reset-panel summary { cursor:pointer; font-weight:600; }
+.drop-table.reset-table th:first-child { width:56px; }
+.drop-table.reset-table th:last-child,.drop-table.reset-table td:last-child { text-align:left; white-space:normal; }
 .drop-table-wrap { overflow-x:auto; margin-top:12px; }
 .drop-table { border-collapse:collapse; width:100%; font-size:12px; font-variant-numeric:tabular-nums; }
 .drop-table th,.drop-table td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:9px 6px; overflow-wrap:anywhere; }
@@ -562,6 +567,17 @@ select:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
 @media(max-width:650px) { .settings-panel { padding:20px 16px; } .settings-grid { grid-template-columns:1fr; } .settings-heading h2 { font-size:22px; } header .header-actions { gap:6px; } header { gap:10px; } }
 
 /* Explicit item tasks retain the existing workshop surfaces and palette. */
+.acquisition { border-top:1px solid var(--line); padding-top:18px; margin-top:22px; min-width:0; }
+.acquisition .filter { margin:16px 0 8px; }
+.acquisition label:not(.filter) { display:block; margin:12px 0 5px; }
+.acquisition select { width:100%; min-width:0; }
+.acquisition-channel { border-top:1px solid var(--line); padding-top:12px; margin-top:18px; }
+.acquisition-channel summary { cursor:pointer; font-weight:600; }
+.acquisition-channel > button { margin-top:12px; }
+.acquisition-list { list-style:none; margin:12px 0 0; padding:0; }
+.acquisition-list li { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:10px 0; border-top:1px solid var(--line); }
+.acquisition-list span { min-width:0; overflow-wrap:anywhere; }
+.acquisition-list button { flex:none; }
 .item-actions { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 8px; }
 .item-drop-sources { margin-top:24px; border-top:1px solid var(--line); padding-top:18px; }
 .item-source-table { width:100%; border-collapse:collapse; table-layout:fixed; margin:12px 0; font-size:12px; }

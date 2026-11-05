@@ -97,7 +97,7 @@ def validate_edits(loaded: Loaded, edits: list) -> list[dict]:
     ids = {struct.unpack_from('<I', r, 4)[0] for table in (loaded.client, loaded.server) for r in table.records}
     schema = {v['key']: v for v in field_schema()}
     for edit in edits:
-        if not isinstance(edit, dict) or set(edit) != {'source_id', 'target_id', 'name', 'description', 'stats'}:
+        if not isinstance(edit, dict) or set(edit) - {'source_id', 'target_id', 'name', 'description', 'stats', 'acquisition'} or not {'source_id', 'target_id', 'name', 'description', 'stats'}.issubset(edit):
             raise ContentError("道具操作字段不完整或含未支持的字段。")
         source, target = edit['source_id'], edit['target_id']
         if any(type(v) is not int or not 1 <= v <= 32767 for v in (source, target)):
@@ -118,7 +118,14 @@ def validate_edits(loaded: Loaded, edits: list) -> list[dict]:
         for key, value in values.items():
             if type(value) is not int or not schema[key]['min'] <= value <= schema[key]['max']:
                 raise ContentError(f"{schema[key]['label']} 超出整数范围。")
-        normalized.append({**edit, 'stats': dict(values)})
+        operation = {**edit, 'stats': dict(values)}
+        if 'acquisition' in edit:
+            from .acquisition import normalize_acquisition
+            operation['acquisition'] = normalize_acquisition(edit['acquisition'])
+        normalized.append(operation)
+    if any('acquisition' in edit for edit in normalized):
+        from .acquisition import validate_drop_edits
+        validate_drop_edits(loaded, normalized)
     return normalized
 
 
@@ -159,6 +166,16 @@ def prepare_edits(loaded: Loaded, edits: list) -> tuple[dict, list[dict]]:
             server = server.insert(insertion_position(server, before['type']), bytes(ns))
             client = client.insert(insertion_position(client, before['type']), bytes(nc))
         changes.append({'source_id': source, 'target_id': target, 'name': edit['name'], 'fields': differences})
+    from .acquisition import apply_drop_edits
+    server, drop_changes = apply_drop_edits(loaded, server, edits)
+    for change in changes:
+        edit = next(e for e in edits if e['target_id'] == change['target_id'])
+        if any(e['item_id'] == change['target_id'] for e in drop_changes):
+            change['fields'].append({'field': '怪物掉落', 'before': None,
+                                     'after': next(e for e in drop_changes if e['item_id'] == change['target_id'])})
+        for key, label in (('shops', '商店购买'), ('rewards', '任务奖励')):
+            if edit.get('acquisition', {}).get(key):
+                change['fields'].append({'field': label, 'before': None, 'after': edit['acquisition'][key]})
     return {'server_object': encode_table(server), 'client_object': encode_table(client),
             'client_language': encode_language(language)}, changes
 
@@ -179,6 +196,34 @@ def verify_editor_patch(root: Path, directory: Path) -> dict:
         paths.append(source)
     loaded = load_inputs(Inputs(*paths))
     expected, changes = prepare_edits(loaded, manifest['edits'])
+    from .acquisition import build_script_payloads, touched_scripts, SCRIPT_NAME
+    script_sources = {}
+    script_meta = manifest.get('scripts', {})
+    if not isinstance(script_meta, dict) or set(script_meta) != touched_scripts(manifest['edits']):
+        raise ContentError('获取途径脚本清单不完整。')
+    if script_meta:
+        from .plot_maps import NATIVE_SHA256
+        if manifest.get('script_native_sha256') != NATIVE_SHA256:
+            raise ContentError('获取脚本的服务端版本标记无效。')
+    for filename, meta in script_meta.items():
+        if (not SCRIPT_NAME.fullmatch(filename) or not isinstance(meta, dict) or
+                set(meta) != {'path', 'source_sha256', 'sha256', 'bytes'} or
+                type(meta['bytes']) is not int or not 520 <= meta['bytes'] <= 4 * 1024 * 1024):
+            raise ContentError('脚本名称无效。')
+        relative = f'server/qingfeng/ASM/{filename}'
+        if meta.get('path') != relative:
+            raise ContentError('脚本补丁路径无效。')
+        source = directory / 'baseline' / relative
+        target = directory / relative
+        if not source.resolve().is_relative_to(directory) or not target.resolve().is_relative_to(directory):
+            raise ContentError('脚本补丁路径越界。')
+        script_sources[filename] = read_bytes(source)
+        if sha256(script_sources[filename]) != meta['source_sha256']:
+            raise ContentError('脚本基线校验失败。')
+    for filename, blob in build_script_payloads(script_sources, manifest['edits']).items():
+        actual = read_bytes(directory / script_meta[filename]['path'])
+        if actual != blob or sha256(actual) != script_meta[filename]['sha256'] or len(actual) != script_meta[filename]['bytes']:
+            raise ContentError('脚本补丁包含获取配置之外的修改。')
     for key, relative in PAYLOAD_PATHS.items():
         path = directory / relative
         if not path.resolve().is_relative_to(directory):
@@ -193,10 +238,11 @@ def verify_editor_patch(root: Path, directory: Path) -> dict:
         raise ContentError("补丁差异清单不一致。")
     return {'status': 'offline_validated_runtime_pending', 'operations': len(changes),
             'all_records_checked': True, 'opaque_bytes_preserved': True,
+            'acquisition_scripts_checked': len(script_meta),
             'original_language_entries_preserved': True, 'gameplay_verified': False}
 
 
-def export_editor_patch(root: Path, loaded: Loaded, edits: list) -> dict:
+def export_editor_patch(root: Path, loaded: Loaded, edits: list, *, acquisition=None) -> dict:
     """Publish a new verified patch below output/editor/patches, including rollback baselines."""
     if not edits:
         raise ContentError("草稿为空，请先暂存道具修改。")
@@ -204,6 +250,11 @@ def export_editor_patch(root: Path, loaded: Loaded, edits: list) -> dict:
         if read_bytes(path) != blob:
             raise ContentError("源文件在编辑期间发生变化，请重启编辑器重新加载。")
     blobs, changes = prepare_edits(loaded, edits)
+    from .acquisition import build_script_payloads, touched_scripts
+    script_sources = acquisition.export_sources(edits) if acquisition is not None else {}
+    if touched_scripts(edits) and acquisition is None:
+        raise ContentError('商店和任务奖励导出需要经过校验的脚本数据源。')
+    scripts = build_script_payloads(script_sources, edits)
     if not any(c['fields'] for c in changes):
         raise ContentError("草稿没有实际修改。")
     name = datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]
@@ -218,6 +269,16 @@ def export_editor_patch(root: Path, loaded: Loaded, edits: list) -> dict:
         manifest = {'format': 'xyj-editor-patch/v1', 'created_at': datetime.now(timezone.utc).isoformat(),
                     'status': 'offline_validated_runtime_pending', 'sources': sources, 'edits': edits, 'changes': changes,
                     'files': {key: {'path': PAYLOAD_PATHS[key], 'sha256': sha256(blob), 'bytes': len(blob)} for key, blob in blobs.items()}}
+        if scripts:
+            from .plot_maps import NATIVE_SHA256
+            manifest['script_native_sha256'] = NATIVE_SHA256
+            manifest['scripts'] = {}
+            for filename, blob in scripts.items():
+                relative = f'server/qingfeng/ASM/{filename}'
+                atomic_write(staging / 'baseline' / relative, script_sources[filename])
+                atomic_write(staging / relative, blob)
+                manifest['scripts'][filename] = {'path': relative, 'source_sha256': sha256(script_sources[filename]),
+                                                 'sha256': sha256(blob), 'bytes': len(blob)}
         for (key, relative), original in zip(PAYLOAD_PATHS.items(), loaded.blobs):
             atomic_write(staging / 'baseline' / relative, original)
             atomic_write(staging / relative, blobs[key])
@@ -229,6 +290,7 @@ def export_editor_patch(root: Path, loaded: Loaded, edits: list) -> dict:
             'server/qingfeng/Object.dbf 用于实际服务端；client/Main 两文件必须配套更新。\n'
             '部署前停止两端并核对来源哈希；baseline 是对应的回退原文件。\n'
             'manifest.json 记录修改字段与来源。此工具不会部署、发道具或重启服务器。\n'
+            '如含 server/qingfeng/ASM 编号脚本，须与道具文件配套更新。奖励沿用原任务条件；原生发奖按顺序执行，非事务。\n'
         ).encode('utf-8-sig'))
         os.rename(staging, destination)
         return {'path': str(destination), 'verification': result, 'changes': changes}

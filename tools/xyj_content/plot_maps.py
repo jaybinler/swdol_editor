@@ -52,18 +52,23 @@ def decode_script(blob: bytes, filename: str) -> dict:
     first, count = struct.unpack_from('<II', data)
     if count > 200 or first != int(filename[4:8]) * 200 or 8 + count * 4 > len(data):
         raise ContentError('脚本编号表越界。')
-    plots, previous_end = {}, 8 + count * 4
+    plots, ranges = {}, []
     for index in range(count):
         start = struct.unpack_from('<I', data, 8 + index * 4)[0]
         if start == 0:
             continue
-        if start % 4 or start < previous_end or start + 12 > len(data):
+        if start % 4 or start < 8 + count * 4 or start + 12 > len(data):
             raise ContentError('脚本函数入口重叠或越界。')
         own, end = struct.unpack_from('<II', data, start)
         if own != start or end % 4 or not start + 8 <= end <= len(data) - 4:
             raise ContentError('脚本函数边界无效。')
         plots[first + index] = (data, start + 8, end + 4, filename.upper(), header)
-        previous_end = end + 4
+        ranges.append((start, end + 4))
+    # Native tables address functions by offset, not by physical order. Edited functions
+    # may be copied to the tail while every opaque original function stays in place.
+    ranges.sort()
+    if any(left[1] > right[0] for left, right in zip(ranges, ranges[1:])):
+        raise ContentError('脚本函数入口重叠。')
     return plots
 
 

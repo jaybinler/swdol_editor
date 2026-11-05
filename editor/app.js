@@ -5,7 +5,8 @@ const state = {items: [], fields: [], edits: [], revision: 0, details: new Map()
   draftTarget: null, dirty: false, busy: false, loading: false, mode: 'view', formBaseline: null,
   choosingTemplate: false, baselineIds: new Set(), idsLoaded: false, ready: false,
   page: 0, ticket: 0, previewTicket: 0, previewMode: 'equipped', library: 'items'};
-let viewer, creatures, settingsPanel, itemDropSources;
+let viewer, creatures, settingsPanel, itemDropSources, acquisitionForm;
+let acquisitionSummary = () => [];
 
 /** Change only the visible library; preserve the item form and its unsaved values in place. */
 async function switchLibrary(library, templateId = null) {
@@ -138,14 +139,16 @@ function syncWorkflow() {
 
 /** Query the displayed item ID; clones never inherit the source template's drop relations. */
 function refreshDropSources() {
+  acquisitionForm?.showItem(Number($('target-id').value));
   if (!itemDropSources || state.library !== 'items') return;
   const item = state.selected;
   if (!item?.is_item) { itemDropSources.show({reason: '当前记录不是道具。'}); return; }
-  if (state.mode !== 'create') { itemDropSources.show({id: item.id, draft: false}); return; }
+  const planned = acquisitionForm?.plannedSource();
+  if (state.mode !== 'create') { itemDropSources.show({id: item.id, draft: false, ...(planned ? {planned, unsaved: state.dirty} : {})}); return; }
   const id = Number($('target-id').value);
   const error = targetIdError(id, state.baselineIds, state.edits, state.draftTarget);
   if (error) itemDropSources.show({reason: error});
-  else itemDropSources.show({id, draft: true});
+  else itemDropSources.show({id, draft: true, ...(planned ? {planned, unsaved: state.dirty} : {})});
 }
 
 /** Update the attribute summary from valid form integers without mutating the baseline or draft. */
@@ -294,12 +297,14 @@ function fillForm(edit, mode = 'view', targetId = null) {
   $('item-name').value = edit?.name ?? item.name;
   $('description').value = edit?.description ?? item.description;
   for (const field of state.fields) $(`stat-${field.key}`).value = edit?.stats[field.key] ?? item.stats[field.key];
+  acquisitionForm?.set(edit?.acquisition);
   state.dirty = mode === 'create' && !edit;
   state.draftTarget = edit?.target_id ?? null;
   $('form-error').textContent = '';
   state.formBaseline = {target_id: $('target-id').value, name: $('item-name').value,
     description: $('description').value,
-    stats: Object.fromEntries(state.fields.map(field => [field.key, $(`stat-${field.key}`).value]))};
+    stats: Object.fromEntries(state.fields.map(field => [field.key, $(`stat-${field.key}`).value])),
+    acquisition: structuredClone(edit?.acquisition || null)};
   $('appearance').textContent = `外观脚本 ${item.actor} / 模式 ${item.mode} / 装备动作 ${item.mode + 2}`;
   $('readonly-reason').textContent = item.readonly_reason;
   syncWorkflow();
@@ -385,6 +390,7 @@ async function restoreForm() {
   $('item-name').value = saved.name;
   $('description').value = saved.description;
   for (const field of state.fields) $(`stat-${field.key}`).value = saved.stats[field.key];
+  acquisitionForm?.set(saved.acquisition);
   state.dirty = state.mode === 'create' && state.draftTarget === null;
   $('form-error').textContent = '';
   syncWorkflow();
@@ -450,7 +456,9 @@ async function renderDrafts() {
       line.append(node('span', `${label}：`), node('del', String(old)), node('span', ' → '), node('ins', String(value)));
       entry.append(line);
     }
-    if (!diffs.length) entry.append(node('p', '没有字段变化', 'muted'));
+    const acquisitionLines = acquisitionSummary(edit.acquisition);
+    for (const text of acquisitionLines) entry.append(node('p', text, 'property-note'));
+    if (!diffs.length && !acquisitionLines.length) entry.append(node('p', '没有字段变化', 'muted'));
     entries.push(entry);
   }
   if (revision !== state.revision) return;
@@ -481,6 +489,10 @@ async function stage(event) {
   setBusy(true);
   $('form-error').textContent = '';
   try {
+    if (acquisitionForm) edit.acquisition = acquisitionForm.get();
+    else if (state.formBaseline?.acquisition && Object.values(state.formBaseline.acquisition).some(v => Array.isArray(v) ? v.length : v)) {
+      throw new Error('获取途径模块尚未加载，请重启编辑器并刷新后暂存，避免丢失原配置。');
+    }
     await saveEdits(replaceDraftOperation(state.edits, edit, state.draftTarget));
     fillForm(edit, state.mode);
     status(`已暂存 ${edit.name}（ID ${edit.target_id}）· 草稿版本 ${state.revision}`);
@@ -505,11 +517,12 @@ async function exportPatch() {
   if (state.busy || state.loading) return;
   if (state.exportMode !== 'automatic') { status('请重启编辑器服务，启用自动备份与覆盖。', true); return; }
   if (state.dirty) { status('表单尚未暂存，请先暂存修改后再导出。', true); $('stage').focus(); return; }
-  setBusy(true); status('正在校验补丁、备份并覆盖双端文件…');
+  setBusy(true); status('正在校验补丁、备份并覆盖双端文件及所选获取脚本…');
   try {
     const result = await api('/api/export', {revision: state.revision});
     if (result.status !== 'applied') throw new Error('编辑器服务未更新，请重启服务后重试。');
-    const message = `已覆盖并核验双端文件，共 ${result.operations} 个操作。覆盖前备份：${result.backup_path}。${result.cleanup_warning || ''}游戏内效果待重新加载后验收。`;
+    const scriptCount = Object.keys(result.targets || {}).filter(key => key.startsWith('script:')).length;
+    const message = `已覆盖并核验双端文件，共 ${result.operations} 个操作${scriptCount ? `，含 ${scriptCount} 份获取途径脚本` : ''}。覆盖前备份：${result.backup_path}。${result.cleanup_warning || ''}游戏内效果待重新加载后验收。`;
     $('export-result').textContent = message;
     status(message);
     try { sessionStorage.setItem('last-apply-result', message); } catch { /* Storage may be disabled. */ }
@@ -541,8 +554,17 @@ async function start() {
     }
     Object.assign(state, {items: data.items, fields: data.fields, edits: data.edits,
       revision: data.revision, token: data.token, ready: true, exportMode: data.export_mode});
+    try {
+      const module = await import('./acquisition.js');
+      acquisitionSummary = module.acquisitionSummary;
+      acquisitionForm = new module.AcquisitionForm({api, node, getGeneration: () => state.workspaceGeneration, onReady: refreshDropSources});
+      acquisitionForm.load();
+    } catch {
+      $('acquisition-status').textContent = '重启本机编辑器后启用获取途径配置。';
+      for (const control of $('acquisition').querySelectorAll('input, select, button')) control.disabled = true;
+    }
     $('export').title = state.exportMode === 'automatic' ?
-      '备份后替换服务端 Object.dbf 与客户端 Main 两份文件' : '请重启编辑器服务以启用自动覆盖';
+      '备份后替换服务端 Object.dbf、客户端 Main 两份文件及所选商店／任务脚本' : '请重启编辑器服务以启用自动覆盖';
     $('category').replaceChildren(...data.categories.map(category => {
       const count = state.items.filter(item => item.is_item && (category.key === 'all' || item.categories.includes(category.key))).length;
       const option = node('option', `${category.label}（${count}）`); option.value = category.key; return option;
@@ -594,7 +616,7 @@ async function start() {
       if (applied) { $('export-result').textContent = applied; status(applied); sessionStorage.removeItem('last-apply-result'); }
     } catch { /* The export remains committed if browser storage is unavailable. */ }
     if (creatures && params.get('library') === 'creatures') {
-      $('creature-search').value = params.get('npc') || '';
+      $('creature-search').value = params.get('npc') || params.get('q') || '';
       creatures.initialMap = params.get('map') || 'all';
       await switchLibrary('creatures');
     }

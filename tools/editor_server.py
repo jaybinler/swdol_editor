@@ -54,6 +54,8 @@ class EditorState:
         self.token = secrets.token_urlsafe(32)
         self.lock = RLock()
         self._creatures = None
+        self._acquisition = None
+        self.map_directory = (config or {}).get('map_dir', 'XYJ_SEVVER/qingfeng')
         self.draft_path = output_path(self.root, Path('output/editor/draft.json'))
         legacy = self.draft_path
         if config is not None:
@@ -109,11 +111,24 @@ class EditorState:
         if set(value) != {'revision', 'edits'} or type(value['revision']) is not int or value['revision'] != self.revision:
             raise ContentError("草稿已在其他页面修改，请刷新后再操作。")
         edits = validate_edits(self.loaded, value['edits'])
+        from xyj_content.acquisition import has_acquisition
+        if has_acquisition(edits):
+            self.acquisition().validate(edits)
         revision = self.revision + 1
         write_json(self.draft_path, {'format': 'xyj-editor-draft/v1', 'sources': self.hashes,
                                     'revision': revision, 'edits': edits})
         self.edits, self.revision = edits, revision
         return {'revision': revision, 'edits': edits}
+
+    def acquisition(self):
+        """Load optional acquisition choices lazily; never connect to the production database."""
+        from xyj_content.acquisition import AcquisitionCatalog
+        from xyj_content.settings import input_path
+        with self.lock:
+            if self._acquisition is None:
+                directory = input_path(self.root, self.map_directory) if self.map_directory else None
+                self._acquisition = AcquisitionCatalog(self.loaded, self.creatures(), directory)
+            return self._acquisition
 
 
 def make_handler(context):
@@ -172,6 +187,8 @@ def make_handler(context):
                                    'revision': state.revision, 'workspace_generation': generation})
                 elif path == '/api/creatures/catalog':
                     self.json(state.creatures().metadata())
+                elif path == '/api/acquisition/catalog':
+                    self.json({**state.acquisition().public(), 'workspace_generation': generation})
                 elif path == '/api/creatures':
                     query = parse_qs(urlsplit(self.path).query)
                     self.json(state.creatures().listing(query.get('q', [''])[0], query.get('map', ['all'])[0],
@@ -234,6 +251,7 @@ def make_handler(context):
                                '/settings.js': 'settings.js',
                                '/item-workflow.js': 'item-workflow.js',
                                '/item-drops.js': 'item-drops.js',
+                               '/acquisition.js': 'acquisition.js',
                                '/viewer.js': 'viewer.js', '/style.css': 'style.css',
                                '/vendor/three.module.js': 'node_modules/three/build/three.module.js',
                                '/vendor/three.core.js': 'node_modules/three/build/three.core.js',
@@ -316,7 +334,9 @@ def make_handler(context):
                 elif self.path == '/api/export':
                     if set(value) != {'revision'} or type(value['revision']) is not int or value['revision'] != state.revision:
                         raise ContentError("导出版本已过期，请刷新。")
-                    self.json(export_editor_patch(state.root, state.loaded, state.edits))
+                    from xyj_content.acquisition import has_acquisition
+                    self.json(export_editor_patch(state.root, state.loaded, state.edits,
+                              acquisition=state.acquisition() if has_acquisition(state.edits) else None))
                 else:
                     self.json({'error': '路径不存在。'}, 404)
     return Handler

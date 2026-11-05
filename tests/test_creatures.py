@@ -73,8 +73,8 @@ class CreatureTests(unittest.TestCase):
         self.assertEqual(generation_chance(32767), 100)
         wolf = self.catalog.detail(20003)
         self.assertEqual([r['id'] for r in wolf['inventory']], [6160, 3062, 6712, 6007])
-        self.assertTrue(all(r['drop_percent'] is None for r in wolf['inventory']))
-        self.assertEqual(wolf['drop_status'], 'unconfirmed')
+        self.assertTrue(all(r['drop_percent'] == r['check_percent'] for r in wolf['inventory']))
+        self.assertEqual(wolf['drop_status'], 'user_confirmed_generation_equivalence')
 
     def test_drop_sources_reverse_every_template_rule_once_with_consistent_maps(self):
         expected = defaultdict(set)
@@ -156,7 +156,7 @@ class CreatureTests(unittest.TestCase):
         self.assertEqual(detail['instance_total'],14)
         self.assertTrue(all(r['saved_inventory'] == {'status':'stored','items':[]} for r in detail['instances']))
         self.assertEqual([(r['id'],r['threshold']) for r in detail['inventory']], [(28309,10),(3901,50)])
-        self.assertTrue(all(r['drop_percent'] is None for r in detail['inventory']))
+        self.assertTrue(all(r['drop_percent'] == r['check_percent'] for r in detail['inventory']))
         self.assertIn('Object 模板',detail['drop_note'])
         # Distinct stored rows must remain distinct through the public detail projection.
         first, second = catalog.instances[20995][:2]

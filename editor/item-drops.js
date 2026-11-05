@@ -27,6 +27,26 @@ export class ItemDropSources {
     this.target = target;
     this.page = 0;
     this.ticket++;
+    if (target.planned) {
+      const source = target.planned, row = this.node('tr'), name = this.node('td');
+      const button = this.node('button', source.name, 'text-link');
+      button.dataset.dropCreatureId = String(source.id);
+      button.addEventListener('click', async () => {
+        try { await this.openCreature(source.id); }
+        catch (error) { this.$('item-drop-note').textContent = error.message; }
+      });
+      name.append(button); row.append(name, this.node('td', String(source.id)), this.node('td', source.map));
+      this.$('item-drop-rows').replaceChildren(row);
+      this.$('item-drop-count').textContent = '1 种 · 待发布';
+      this.$('item-drop-note').textContent = `${target.unsaved ? '表单未暂存' : '已暂存，待配套发布'}。` +
+        `${source.percent === null ? '掉率待填写' : `实际掉率 ${source.percent.toFixed(4)}%`}，成功掉落 1 件。`;
+      this.$('item-drop-page').textContent = '1 / 1';
+      this.$('item-drop-prev').disabled = this.$('item-drop-next').disabled = true;
+      this.$('item-drop-retry').hidden = true;
+      this.$('item-drop-sources').setAttribute('aria-busy', 'false');
+      this.loading = false;
+      return;
+    }
     if (target.reason) {
       this.loading = false;
       this.message(target.reason);
@@ -51,7 +71,7 @@ export class ItemDropSources {
 
   /** Fetch a bounded page, discarding errors and results from an old item, workspace or hidden section. */
   async load(page = 0) {
-    if (!this.active || !this.target?.id || this.target.reason) return;
+    if (!this.active || !this.target?.id || this.target.reason || this.target.planned) return;
     const ticket = ++this.ticket;
     const target = this.target;
     this.page = Math.max(0, page);

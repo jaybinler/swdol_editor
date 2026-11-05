@@ -13,6 +13,8 @@ from .objects import view_record
 from .models import read_action, read_mesh, resolve_model, item_model
 from .appearance import _body_texture, _attach, HEAD_SLOT, MAINHAND_SLOT, OFFHAND_SLOT
 from .plot_maps import validate_script_index
+from .reset_maps import build_reset_map_index, reset_candidates
+from .summon_maps import build_summon_map_index
 
 PAGE_SIZE = 60
 SNAPSHOT = Path('output/editor/npc-snapshot')
@@ -25,7 +27,7 @@ def generation_chance(threshold: int) -> float:
 
 
 def inventory_rules(record: bytes, definitions: dict) -> list[dict]:
-    """Read twelve ordered creation candidates; never present creation chance as kill probability."""
+    """Read native candidates; the user confirmed generation/drop equivalence in game on 2026-11-05."""
     result = []
     for slot, (object_id, threshold) in enumerate(zip(struct.unpack_from('<12h', record, 254),
                                                     struct.unpack_from('<12h', record, 278)), 1):
@@ -36,7 +38,7 @@ def inventory_rules(record: bytes, definitions: dict) -> list[dict]:
                        'name': definition.name if definition else '未找到物品定义',
                        'known': definition is not None, 'type': definition.type_code if definition else None,
                        'threshold': threshold, 'check_percent': generation_chance(threshold),
-                       'drop_percent': None, 'status': 'creation_check_only',
+                       'drop_percent': generation_chance(threshold), 'status': 'user_confirmed_generation_equivalence',
                        'capacity_limited': len(result) >= 8})
     return result
 
@@ -139,6 +141,34 @@ class CreatureCatalog:
                 self.script_relations[row['template_id']].append(row)
             self.script_coverage = {'available': True, 'relations': len(rows),
                                     'diagnostics': data['script_index']['diagnostics']}
+        before_reset = {tid: set(zones) for tid, zones in self.map_memberships.items()}
+        reset_index = build_reset_map_index(self.records, self.roles, self.script_relations,
+            native_sha256=data['script_index']['native_sha256'] if self.script_coverage['available'] else None)
+        self.reset_relations = defaultdict(list)
+        for relation in reset_index['relations']:
+            tid, zone = relation['template_id'], relation['map_id']
+            self.map_memberships.setdefault(tid, set()).add(zone)
+            self.reset_relations[tid].append(relation)
+        self.reset_coverage = {key: value for key, value in reset_index.items() if key != 'relations'}
+        self.reset_coverage.update({'relations': len(reset_index['relations']),
+            'new_map_memberships': sum(row['map_id'] not in before_reset.get(row['template_id'], set())
+                                       for row in reset_index['relations']),
+            'newly_placed_templates': sum(bool(zones) and not before_reset.get(tid)
+                                          for tid, zones in self.map_memberships.items())})
+        before_summon = {tid: set(zones) for tid, zones in self.map_memberships.items()}
+        summon_index = build_summon_map_index(self.records, self.objects, self.map_memberships,
+            native_sha256=data['script_index']['native_sha256'] if self.script_coverage['available'] else None)
+        self.summon_relations = defaultdict(list)
+        for relation in summon_index['relations']:
+            tid, zone = relation['template_id'], relation['map_id']
+            self.map_memberships.setdefault(tid, set()).add(zone)
+            self.summon_relations[tid].append(relation)
+        self.summon_coverage = {key: value for key, value in summon_index.items() if key != 'relations'}
+        self.summon_coverage.update({'relations': len(summon_index['relations']),
+            'new_map_memberships': sum(row['map_id'] not in before_summon.get(row['template_id'], set())
+                                       for row in summon_index['relations']),
+            'newly_placed_templates': sum(bool(zones) and not before_summon.get(tid)
+                                          for tid, zones in self.map_memberships.items())})
         self.entries = []
         for tid, record in self.records.items():
             instances = self.instances[tid]
@@ -168,7 +198,8 @@ class CreatureCatalog:
         return {'item_id': object_id, 'total': len(ids), 'page': page, 'pages': pages,
                 'scope': 'npc_template_inventory',
                 'items': [{'id': tid, 'name': self.entries_by_id[tid]['name'],
-                           'maps': [{'id': zone, 'name': self.zones[zone]}
+                           'maps': [{'id': zone, 'name': self.zones[zone],
+                                     'sources': self.map_sources(tid, zone)}
                                     for zone in self.entries_by_id[tid]['maps']]}
                           for tid in ids[page*PAGE_SIZE:(page+1)*PAGE_SIZE]]}
 
@@ -176,10 +207,19 @@ class CreatureCatalog:
         """Expose map counts and provenance without leaking snapshot paths or raw database columns."""
         return {'source': self.source, 'templates': len(self.records), 'instances': len(self.roles),
                 'script_map_coverage': self.script_coverage,
+                'reset_map_coverage': deepcopy(self.reset_coverage),
+                'summon_map_coverage': deepcopy(self.summon_coverage),
                 'unplaced': sum(not entry['maps'] for entry in self.entries),
                 'maps': [{'id': key, 'name': name, 'instances': self.map_counts[key],
                           'templates': sum(key in e['maps'] for e in self.entries)}
                          for key, name in sorted(self.zones.items())]}
+
+    def map_sources(self, template_id: int, map_id: int) -> list[str]:
+        """Name the same evidence kinds for detail, drop sources and acquisition selectors."""
+        return (['saved'] if any(r['map_id'] == map_id for r in self.instances[template_id]) else []) + \
+               (['script'] if any(r['map_id'] == map_id for r in self.script_relations[template_id]) else []) + \
+               (['reset'] if any(r['map_id'] == map_id for r in self.reset_relations[template_id]) else []) + \
+               (['summon'] if any(r['map_id'] == map_id for r in self.summon_relations[template_id]) else [])
 
     def _map(self, value: str) -> int | str:
         if value in ('all', 'unplaced'):
@@ -226,18 +266,26 @@ class CreatureCatalog:
         return {'id': template_id, 'name': view.name, 'description': view.description,
                 'maps': [{'id': key, 'name': self.zones[key],
                           'instances': sum(r['map_id'] == key for r in self.instances[template_id]),
-                          'sources': (['saved'] if any(r['map_id'] == key for r in self.instances[template_id]) else []) +
-                                     (['script'] if any(r['map_id'] == key for r in self.script_relations[template_id]) else []),
-                          'script_sources': [r for r in self.script_relations[template_id] if r['map_id'] == key]}
+                          'sources': self.map_sources(template_id, key),
+                          'script_sources': [r for r in self.script_relations[template_id] if r['map_id'] == key],
+                          'reset_sources': deepcopy([r for r in self.reset_relations[template_id] if r['map_id'] == key]),
+                          'summon_sources': [{**deepcopy(r),
+                              'caster_name': self.definitions[r['caster_template_id']].name,
+                              'skill_name': self.definitions[r['skill_id']].name}
+                             for r in self.summon_relations[template_id] if r['map_id'] == key]}
                          for key in sorted(self.map_memberships.get(template_id, ()))],
                 'instances': [{**{k:v for k,v in r.items() if k not in ('hand_items', 'hand_counts')},
                                'saved_inventory': saved_inventory(r, self.definitions)}
                               for r in instances[page*PAGE_SIZE:(page+1)*PAGE_SIZE]], 'instance_total': len(instances),
                 'instance_page': page, 'instance_pages': pages,
+                'reset_candidates': [{**candidate,
+                    'name': self.definitions[candidate['id']].name if candidate['valid'] else '无效角色模板'}
+                    for candidate in reset_candidates(template_id, self.records)] if self.reset_coverage['available'] else [],
+                'reset_candidates_available': self.reset_coverage['available'],
                 'inventory': inventory_rules(record, self.definitions),
-                'drop_status': 'unconfirmed',
-                'drop_note': '以下来自 Object 模板，同一模板的实例共用这些候选与阈值；不是所选实例的实际携带或已确认死亡掉落。',
-                'probability_note': '服务端逐槽取 r = rand() % 100，r 不大于原始阈值时尝试生成。rand 输出为 0 至 32767；令 t 为阈值加 1 后限制在 0 至 100，单次判定百分比 = (327 × t + min(t, 68)) ÷ 32768 × 100。尚未计入最多 8 次成功候选、容量、合并、脚本及死亡获取条件，因此不等于最终击杀掉率；最终掉率尚未计算，显示“未确认”。'}
+                'drop_status': 'user_confirmed_generation_equivalence',
+                'drop_note': '以下来自 Object 模板，同一模板的实例共用这些候选与阈值。用户于 2026-11-05 游戏内确认生成概率等同实际击杀掉落率；不代表读取了运行时库存。',
+                'probability_note': '服务端逐槽取 r = rand() % 100，r 不大于原始阈值时生成 1 件。rand 输出为 0 至 32767；令 t 为阈值加 1 后限制在 0 至 100，百分比 = (327 × t + min(t, 68)) ÷ 32768 × 100。按用户游戏实测结论作为掉率使用；新增配置同时检查最多 8 个有效候选的容量，避免候选顺序抑制新增掉落。'}
 
     def model(self, template_id: int, role_id: str | None = None) -> dict:
         """Build a fresh first-pose character with real saved equipment; retain partial-load warnings."""
