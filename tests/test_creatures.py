@@ -20,6 +20,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 from editor_server import EditorState, make_handler
+from xyj_content.settings import default_config
 from xyj_content.binary import ContentError
 from xyj_content.creatures import CreatureCatalog, SNAPSHOT, generation_chance, inventory_rules, saved_inventory
 from xyj_content.models import read_action, read_mesh, resolve_model
@@ -28,7 +29,7 @@ from xyj_content.models import read_action, read_mesh, resolve_model
 class CreatureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.state = EditorState(ROOT, ROOT / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf')
+        cls.state = EditorState(ROOT, config=default_config())
         cls.catalog = cls.state.creatures()
 
     def test_snapshot_counts_exclude_reserved_id_and_keep_unknown_maps(self):
@@ -215,7 +216,7 @@ class CreatureTests(unittest.TestCase):
 class CreatureHTTPTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.state = EditorState(ROOT, ROOT / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf')
+        cls.state = EditorState(ROOT, config=default_config())
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(cls.state))
         cls.thread = Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()

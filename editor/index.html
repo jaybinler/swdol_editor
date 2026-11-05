@@ -9,12 +9,12 @@
   <a href="#properties" class="skip">跳到道具属性</a>
   <header>
     <div class="brand"><span class="brand-mark" aria-hidden="true">轩</span><div><h1>道具工坊</h1><p>轩辕剑网络版 / 本地内容编辑器</p></div></div>
-    <div class="header-actions"><span class="tag">本地工作区</span><button id="open-settings" aria-expanded="false" aria-controls="settings-panel">设置</button><button id="export" class="primary" disabled>导出双端补丁 <span aria-hidden="true">↗</span></button></div>
+    <div class="header-actions"><span class="tag">本地工作区</span><button id="open-settings" aria-expanded="false" aria-controls="settings-panel">设置</button><button id="export" class="primary" disabled>导出并覆盖双端文件</button></div>
   </header>
   <nav class="library-switch" aria-label="内容类型"><button id="library-items" aria-pressed="true">道具</button><button id="library-creatures" aria-pressed="false">NPC与怪物</button><span id="creature-availability-note" class="muted">NPC与怪物仅供查看</span></nav>
   <div id="status" role="status" aria-live="polite">正在读取道具与本地基线…</div>
   <section id="settings-panel" class="settings-panel" aria-labelledby="settings-title" hidden>
-    <div class="settings-heading"><div><h2 id="settings-title" tabindex="-1">数据源设置</h2><p class="muted">自定义读取位置。校验通过后才能保存，游戏原文件保持只读。</p></div><button id="settings-close">返回工坊</button></div>
+    <div class="settings-heading"><div><h2 id="settings-title" tabindex="-1">数据源设置</h2><p class="muted">配置读取基线与覆盖目标，校验通过后保存。点击“导出并覆盖双端文件”将先备份，再替换目标文件。</p></div><button id="settings-close">返回工坊</button></div>
     <p id="settings-message" role="status" aria-live="polite">正在读取配置…</p>
     <form id="settings-form">
       <fieldset><legend>游戏文件</legend><div id="settings-path-basic" class="settings-grid"></div><details class="settings-advanced"><summary>单独指定物件表与资源目录</summary><p class="property-note">留空时从客户端根目录定位 Main、Act、MODEL、TEX 和 Tsw。可填写本机路径或已登录的共享路径。</p><div id="settings-path-advanced" class="settings-grid"></div></details></fieldset>
@@ -76,7 +76,7 @@
         <div class="pagination"><button id="item-drop-prev" aria-label="掉落怪物上一页" disabled>上一页</button><span id="item-drop-page">—</span><button id="item-drop-next" aria-label="掉落怪物下一页" disabled>下一页</button></div>
         <button id="item-drop-retry" hidden>重新读取掉落怪物</button>
       </section>
-      <section class="draft-area" aria-labelledby="draft-title"><div class="section-title"><h2 id="draft-title">补丁草稿</h2><span id="draft-count" class="mono">0 个操作</span></div><p class="muted">暂存后可切换道具；导出时生成服务端与客户端配套文件。</p><div id="draft-list"></div><div id="export-result"></div></section>
+      <section class="draft-area" aria-labelledby="draft-title"><div class="section-title"><h2 id="draft-title">补丁草稿</h2><span id="draft-count" class="mono">0 个操作</span></div><p class="muted">核对草稿后点击“导出并覆盖双端文件”。覆盖前备份到本地，仅保留最近一次备份。</p><div id="draft-list"></div><div id="export-result"></div></section>
     </section>
     <section class="properties" id="properties" aria-labelledby="properties-title">
       <div class="section-title"><h2 id="properties-title">道具属性</h2><span id="edit-state" class="tag">加载中</span></div>
@@ -85,6 +85,7 @@
       <p id="template-source" class="template-source" hidden></p>
       <section id="template-properties" aria-label="模板属性" aria-busy="true">
         <p class="template-caption">属性概览 · 与当前表单同步</p>
+        <section id="weapon-summary" class="property-group" aria-labelledby="weapon-title" hidden><h3 id="weapon-title">武器属性</h3><dl id="weapon-properties" class="property-grid"></dl></section>
         <section class="property-group" aria-labelledby="requirements-title"><h3 id="requirements-title">适用条件</h3><dl id="requirements" class="property-list"><div><dt>状态</dt><dd>待选择道具</dd></div></dl></section>
         <section class="property-group" aria-labelledby="resistances-title"><h3 id="resistances-title">抗性</h3><dl id="resistances" class="property-grid"></dl></section>
         <section class="property-group" aria-labelledby="hidden-title"><h3 id="hidden-title">隐藏属性与其他加成</h3><dl id="hidden-attributes" class="property-list"></dl><p id="instance-note" class="property-note"></p></section>
@@ -96,6 +97,7 @@
         <p id="id-hint" class="property-note" aria-live="polite"></p>
         <label for="item-name">名称 <span class="muted">GBK 最多 15 字节</span></label><input id="item-name" required>
         <label for="description">说明 <span class="muted">GBK 最多 199 字节</span></label><textarea id="description" rows="3"></textarea>
+        <div id="weapon-fields" hidden><div class="section-title stats-title"><h3>武器属性</h3><span class="muted">与游戏显示数值一致</span></div><div id="weapon-stats" class="stats"></div></div>
         <div class="section-title stats-title"><h3>基础属性</h3><span class="muted">已确认字段</span></div><div id="stats" class="stats"></div>
         <div class="section-title stats-title"><h3>抗性</h3><span class="muted">-128 至 127</span></div><div id="resistance-stats" class="stats"></div>
         <div class="section-title stats-title"><h3>回复属性</h3><span class="muted">-32768 至 32767</span></div><div id="recovery-stats" class="stats"></div>

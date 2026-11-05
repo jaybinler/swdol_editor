@@ -7,17 +7,17 @@ import struct
 from .binary import ContentError
 from .models import read_action, read_mesh, resolve_model, item_model
 from .objects import find_unique
-from .sprites import sprite_index
+from .sprites import sprite_png
 from .item_properties import template_properties
 
 # Native actor pages and world Object defaults; each body's TSW label confirms the variant.
 PROFILES = {
-    'human_male': {'label': '人族男', 'race': '人族', 'sex': '男', 'actor': 1, 'default_body': 5169, 'hint': '人男'},
-    'human_female': {'label': '人族女', 'race': '人族', 'sex': '女', 'actor': 3, 'default_body': 5059, 'hint': '人女'},
-    'demon_male': {'label': '魔族男', 'race': '魔族', 'sex': '男', 'actor': 5, 'default_body': 5215, 'hint': '魔男'},
-    'demon_female': {'label': '魔族女', 'race': '魔族', 'sex': '女', 'actor': 7, 'default_body': 5206, 'hint': '魔女'},
-    'fairy_male': {'label': '仙族男', 'race': '仙族', 'sex': '男', 'actor': 9, 'default_body': 5200, 'hint': '仙男'},
-    'fairy_female': {'label': '仙族女', 'race': '仙族', 'sex': '女', 'actor': 11, 'default_body': 5192, 'hint': '仙女'},
+    'human_male': {'label': '人族男', 'race': '人族', 'sex': '男', 'actor': 1, 'default_body': 5169},
+    'human_female': {'label': '人族女', 'race': '人族', 'sex': '女', 'actor': 3, 'default_body': 5059},
+    'demon_male': {'label': '魔族男', 'race': '魔族', 'sex': '男', 'actor': 5, 'default_body': 5215},
+    'demon_female': {'label': '魔族女', 'race': '魔族', 'sex': '女', 'actor': 7, 'default_body': 5206},
+    'fairy_male': {'label': '仙族男', 'race': '仙族', 'sex': '男', 'actor': 9, 'default_body': 5200},
+    'fairy_female': {'label': '仙族女', 'race': '仙族', 'sex': '女', 'actor': 11, 'default_body': 5192},
 }
 
 # Native world renderer: offhand actor +0x688 uses slot 2 (0x462aac/0x462b2c);
@@ -26,33 +26,32 @@ HEAD_SLOT, MAINHAND_SLOT, OFFHAND_SLOT = 0, 1, 2
 
 
 def profile_options() -> list[dict]:
-    """Expose six verified variants and automatic selection by restrictions and texture compatibility."""
+    """Expose six verified variants and automatic selection by actual item restrictions."""
     return [{'key': 'auto', 'label': '自动匹配'}, *({'key': key, 'label': p['label']} for key, p in PROFILES.items())]
 
 
-def automatic_profile(record: bytes, compatible: list[str]) -> str:
-    """Choose a stable compatible race/sex using the same restrictions as item details; never mutate input."""
+def _matching_profiles(record: bytes, compatible: list[str]) -> list[str]:
     conditions = {group['key']: group for group in template_properties(record)['requirements']}
     if any(conditions[key]['status'] == 'unknown' for key in ('race', 'sex')):
         raise ContentError('物品的种族或性别限制未解析，无法自动匹配；请手动选择基础人物。')
     races, sexes = conditions['race']['allowed'], conditions['sex']['allowed']
     if not races or not sexes:
         raise ContentError('物品没有允许的种族或性别，无法自动匹配；请手动选择基础人物。')
-    for key, definition in PROFILES.items():
-        if key in compatible and definition['race'] in races and definition['sex'] in sexes:
-            return key
+    return [key for key, definition in PROFILES.items()
+            if key in compatible and definition['race'] in races and definition['sex'] in sexes]
+
+
+def automatic_profile(record: bytes, compatible: list[str]) -> str:
+    """Choose a stable compatible race/sex using item restrictions; never infer from texture labels."""
+    candidates = _matching_profiles(record, compatible)
+    if candidates:
+        return candidates[0]
     raise ContentError('物品的种族、性别要求与可用人物外观不兼容，无法自动匹配。')
 
 
 def _action(client: Path, record: bytes) -> dict:
     actor, mode = struct.unpack_from('<HH', record, 60)
     return read_action(client, actor, mode + 2)
-
-
-def _sprite_name(client: Path, frame: int) -> str:
-    category, index = divmod(frame, 3000)
-    blob = sprite_index(client, category)
-    return blob[28+(index-1)*44:48+(index-1)*44].split(b'\0', 1)[0].decode('big5', 'replace')
 
 
 def _body_texture(model: dict, action: dict) -> None:
@@ -93,17 +92,20 @@ def equipped_model(client: Path, table, record: bytes, profile: str = 'auto') ->
         raise ContentError("该部位没有已验证的独立穿戴动作；可查看单件展示与图标。")
     selected = _action(client, record)
     allowed = list(PROFILES)
+    restriction_warning = ''
     if mask & 2 and selected['kind'] == 1:
-        name = _sprite_name(client, selected['frame'])
-        hints = [key for key, p in PROFILES.items() if p['hint'] in name]
-        if '人共用' in name:
-            hints = ['human_male', 'human_female']
-        if not hints:
-            raise ContentError(f"身体贴图“{name}”的人物类型尚未核对，暂不拼配。")
-        allowed = hints
+        # SWDOL.exe 0x58b8d2..0x58b96a applies ACT FR/AP directly to the
+        # character's body material. TSW directory labels are not compatibility rules.
+        sprite_png(client, selected['frame'], selected.get('pose', 0))
+        try:
+            allowed = _matching_profiles(record, allowed)
+        except ContentError:
+            # Preserve manual inspection of legacy records with unknown/empty restrictions.
+            # Auto still calls automatic_profile below and explicitly rejects those records.
+            restriction_warning = '该装备的种族或性别限制未明确，手动预览不代表实际可装备。'
     profile = automatic_profile(record, allowed) if profile == 'auto' else profile
     if profile not in allowed:
-        raise ContentError("这件身体装备的贴图与所选人物不兼容，请使用自动匹配。")
+        raise ContentError("这件身体装备的种族或性别要求与所选人物不兼容，请使用自动匹配。")
     definition = PROFILES[profile]
     action = read_action(client, definition['actor'], 0)
     model = deepcopy(read_mesh(resolve_model(client, action['frame'])))
@@ -112,6 +114,9 @@ def equipped_model(client: Path, table, record: bytes, profile: str = 'auto') ->
     warnings = ['静态人物穿戴预览；尚未播放动画，实际可装备条件与染色/特效需游戏内验收。']
     if mask & 2:
         _body_texture(model, selected)
+        warnings.extend(selected['warnings'])
+        if restriction_warning:
+            warnings.append(restriction_warning)
     else:
         equipment = item_model(client, record)
         _attach(model, equipment, HEAD_SLOT if mask & 1 else MAINHAND_SLOT if mask & 4 else OFFHAND_SLOT)

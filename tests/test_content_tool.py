@@ -3,6 +3,7 @@
 from dataclasses import replace
 from pathlib import Path
 import json
+import hashlib
 import struct
 import sys
 import tempfile
@@ -293,6 +294,13 @@ class RealFileTests(unittest.TestCase):
         baseline = PROJECT / "output/release-review-318/rollback/client/Main"
         if (baseline / "Object.dbf").exists() and (baseline / "Language.DBF").exists():
             paths = replace(paths, client=baseline / "Object.dbf", language=baseline / "Language.DBF")
+            # The user updated the live local server. Pin this historical comparison to
+            # the captured copy with the original server hash, keeping its assertions intact.
+            historical = PROJECT / 'output/remote-server-20261029/server/GMTools/Object.dbf'
+            if historical.exists():
+                self.assertEqual(hashlib.sha256(historical.read_bytes()).hexdigest(),
+                                 'c882357212108e047f9fed8b2e17aece4d366f22cda0042b3ad8f8550e7bff1c')
+                paths = replace(paths, server=historical)
         loaded = load_inputs(paths)
         self.assertEqual(len(loaded.language.entries), 15219)
         self.assertEqual(loaded.language.text(10818), "桃木剑")

@@ -25,7 +25,8 @@ from .secrets_windows import protect_password, unprotect_password
 from .sprites import icon_reference, sprite_path, sprite_png
 
 PATH_FIELDS = (
-    ('client_root', '客户端根目录', 'directory'), ('server_object', '服务端 Object.dbf', 'file'),
+    ('client_root', '客户端根目录', 'directory'), ('server_object', '服务端 Object.dbf（读取基线）', 'file'),
+    ('server_target', '服务端 Object.dbf 覆盖目标', 'file'),
     ('client_object', '客户端 Object（留空自动定位）', 'file'), ('language', 'Language（留空自动定位）', 'file'),
     ('act_dir', 'Act 目录（留空使用客户端目录）', 'directory'),
     ('model_dir', 'MODEL 目录（留空使用客户端目录）', 'directory'),
@@ -132,6 +133,8 @@ class SettingsController:
         self.config = default_config()
         self.setup_error = ''
         try:
+            from .deployment import recover_deployment
+            recover_deployment(self.root)
             if self.path.exists():
                 document = read_json(self.path)
                 if document.get('format') != 'xyj-settings/v1':
@@ -229,6 +232,16 @@ class SettingsController:
             if not item_detail(candidate.loaded, 10)['editable']:
                 raise ContentError('两端桃木剑模板不兼容，不能保证编辑与补丁功能。')
             checks.append({'name': '游戏文件与三维资源', 'status': 'passed', 'message': 'Object、Language、桃木剑模型／贴图／图标及双端模板核对通过。'})
+            if config['server_target']:
+                from .deployment import deployment_targets
+                targets = deployment_targets(self.root, config)
+                for key, original in zip(targets, candidate.loaded.blobs):
+                    if read_bytes(targets[key]) != original:
+                        raise ContentError(f'覆盖目标与读取基线不一致：{targets[key]}')
+                probe_files.extend(targets.values())
+                checks.append({'name': '自动覆盖目标', 'status': 'passed', 'message': '三份目标文件与读取基线一致；覆盖时再次核对并验证写入权限。'})
+            else:
+                checks.append({'name': '自动覆盖目标', 'status': 'warning', 'message': '未配置覆盖目标，仍可编辑；自动覆盖前需填写并重新校验。'})
             if config['npc_mode'] == 'database':
                 if not password and self.document and self.document.get('secret_file'):
                     password = self._saved_password(config)

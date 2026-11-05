@@ -125,8 +125,40 @@ class AppearanceTests(unittest.TestCase):
         record = bytearray(self.record(3178))
         struct.pack_into('<I', record, 356, 0x40000 | 0x8000)
         struct.pack_into('<h', record, 80, 1)
+        # Texture labels cannot veto an otherwise valid race/sex combination.
+        worn = equipped_model(self.client, self.table, record)
+        self.assertEqual(worn['profile'], 'fairy_male')
+        self.assertEqual(worn['meshes'][0]['texture_url'], '/api/sprite/3015/0.png')
+
+    def test_reported_body_items_use_restrictions_and_exact_native_texture_frames(self):
+        for object_id, profile, frame in ((3130, 'fairy_male', 3012), (3126, 'fairy_female', 4224),
+                                          (3138, 'fairy_female', 4470), (3211, 'human_female', 3020)):
+            record = self.record(object_id)
+            with self.subTest(object_id=object_id):
+                worn = equipped_model(self.client, self.table, record)
+                expected = read_mesh(resolve_model(self.client, read_action(self.client, PROFILES[profile]['actor'], 0)['frame']))
+                self.assertEqual(worn['profile'], profile)
+                self.assertEqual(worn['file'], expected['file'])
+                self.assertEqual(worn['meshes'][0]['positions'], expected['meshes'][0]['positions'])
+                self.assertEqual(worn['meshes'][0]['texture_url'], f'/api/sprite/{frame}/0.png')
+                self.assertTrue(sprite_png(self.client, frame).startswith(b'\x89PNG'))
+                self.assertEqual(record, self.record(object_id))
+
+    def test_body_with_known_requirements_keeps_manual_choice_and_rejects_wrong_race(self):
+        self.assertEqual(equipped_model(self.client, self.table, self.record(3178), 'human_female')['profile'], 'human_female')
         with self.assertRaisesRegex(ContentError, '不兼容'):
+            equipped_model(self.client, self.table, self.record(3130), 'human_male')
+        record = bytearray(self.record(3138))
+        struct.pack_into('<h', record, 80, 99)
+        with self.assertRaisesRegex(ContentError, '未解析'):
             equipped_model(self.client, self.table, record)
+        worn = equipped_model(self.client, self.table, record, 'fairy_female')
+        self.assertTrue(any('手动预览' in warning for warning in worn['warnings']))
+
+    def test_corrupt_body_sprite_is_rejected_before_material_assignment(self):
+        with patch('xyj_content.appearance.sprite_png', side_effect=ContentError('损坏的TSW资源')):
+            with self.assertRaisesRegex(ContentError, '损坏'):
+                equipped_model(self.client, self.table, self.record(3126))
 
     def test_incompatible_body_variant_and_nonwearable_item_fail_explicitly(self):
         with self.assertRaisesRegex(ContentError, '不兼容'):

@@ -22,6 +22,19 @@ export function replaceDraftOperation(edits, edit, editingTarget = null) {
   return [...remaining, edit];
 }
 
+/** Use the same native category as the weapon/offhand library filter, independent of stat values. */
+export function hasWeaponProperties(item) {
+  return Array.isArray(item?.categories) && item.categories.includes('weapon');
+}
+
+/** Read weapon values from valid form integers, falling back to the immutable template. */
+export function weaponProperties(baselineStats, currentStats, applicable = true) {
+  return [['damage', '伤害力'], ['delay', '延迟'], ['range', '距离']].map(([key, label]) => ({
+    key, label, value: applicable ?
+      (Number.isInteger(currentStats[key]) ? currentStats[key] : baselineStats[key]) : null,
+  }));
+}
+
 /** Project current form values for display only; original guard takes priority and is never written. */
 export function displayProperties(properties, baselineStats, currentStats) {
   const current = (key, fallback) => Number.isInteger(currentStats[key]) ? currentStats[key] : fallback;

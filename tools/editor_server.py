@@ -1,4 +1,4 @@
-"""Loopback-only graphical item editor. Reads game data; writes only output/editor."""
+"""Loopback editor with explicit saved-target deployment, local backup and recovery."""
 
 from argparse import ArgumentParser
 from collections import Counter
@@ -164,6 +164,7 @@ def make_handler(context):
                         self.json({'token': state.token, 'items': state.items, 'fields': field_schema(),
                                    'sources': state.sources, 'revision': state.revision, 'edits': state.edits,
                                    'categories': category_options(), 'profiles': profile_options(), 'ready': True,
+                                   'export_mode': 'automatic' if isinstance(context, SettingsController) else 'offline',
                                    'workspace_generation': generation})
                 elif path == '/api/item-ids':
                     with state.lock:
@@ -293,6 +294,13 @@ def make_handler(context):
                         raise ContentError('请先校验并保存数据源设置。')
                     if isinstance(context, SettingsController) and self.headers.get('X-Workspace-Generation') != str(context.generation):
                         raise ContentError('数据源已切换，请刷新页面后操作草稿。')
+                    if self.path == '/api/export' and isinstance(context, SettingsController):
+                        if set(value) != {'revision'}:
+                            raise ContentError('覆盖请求格式无效。')
+                        from xyj_content.deployment import apply_workspace
+                        with state.lock:
+                            self.json(apply_workspace(context, value['revision']))
+                        return
                     self._write_workspace(state, value)
             except (ContentError, ValueError, UnicodeError, OSError) as exc:
                 self.json({'error': str(exc)}, 400)
@@ -342,7 +350,7 @@ def main():
         settings = SettingsController(ROOT, lambda cfg: EditorState(ROOT, config=cfg), args.server_object)
         server = LocalServer(('127.0.0.1', args.port), make_handler(settings))
         url = f'http://127.0.0.1:{server.server_port}'
-        print(f'轩辕剑道具编辑器：{url}\n输出：{ROOT / "output/editor"}\n未配置或路径失效时，请打开设置。\n按 Ctrl+C 退出。', flush=True)
+        print(f'轩辕剑道具编辑器：{url}\n本地备份与记录：{ROOT / "output/editor"}\n覆盖操作会写入已保存的双端目标；未配置或路径失效时请打开设置。\n按 Ctrl+C 退出。', flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         try:

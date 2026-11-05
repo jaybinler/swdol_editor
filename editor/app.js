@@ -1,4 +1,4 @@
-import {operationMode, targetIdError, replaceDraftOperation, displayProperties} from './item-workflow.js';
+import {operationMode, targetIdError, replaceDraftOperation, displayProperties, weaponProperties, hasWeaponProperties} from './item-workflow.js';
 
 const $ = id => document.getElementById(id);
 const state = {items: [], fields: [], edits: [], revision: 0, details: new Map(), selected: null,
@@ -88,7 +88,7 @@ async function confirmDiscard(message) {
 function setBusy(value) {
   state.busy = value;
   const blocked = value || state.loading;
-  $('export').disabled = blocked || !state.edits.length;
+  $('export').disabled = blocked || !state.edits.length || state.exportMode !== 'automatic';
   $('editor-fields').disabled = blocked || state.mode === 'view' || !state.selected?.editable;
   $('new-item').disabled = blocked || !state.ready;
   $('edit-item').disabled = blocked || !state.selected?.editable || state.mode === 'edit';
@@ -123,7 +123,7 @@ function syncWorkflow() {
   $('form-actions').hidden = state.mode === 'view';
   $('stage').textContent = creating ? '暂存新增' : '暂存修改';
   $('workflow-note').textContent = creating ? '修改名称、说明和基础属性后暂存新增。图标和模型沿用模板。' :
-    state.mode === 'edit' ? '正在编辑现有道具，原 ID 固定。暂存后可导出双端补丁。' :
+    state.mode === 'edit' ? '正在编辑现有道具，原 ID 固定。暂存并核对后，可备份并覆盖双端文件。' :
     '当前为查看模式。点击“编辑道具”修改，或以此为模板新增。';
   $('template-source').hidden = !creating;
   if (creating) $('template-source').textContent = `模板：${state.selected.name}（ID ${state.selected.id}）· 使用原始基线，独立于模板的修改草稿。`;
@@ -157,6 +157,14 @@ function refreshDisplayedProperties() {
     return [field.key, input.value !== '' && input.validity.valid ? input.valueAsNumber : undefined];
   }));
   renderTemplateProperties(displayProperties(item.template_properties, item.stats, values));
+  const weapon = hasWeaponProperties(item);
+  $('weapon-summary').hidden = !weapon;
+  $('weapon-fields').hidden = !weapon;
+  $('weapon-properties').replaceChildren(...(weapon ? weaponProperties(item.stats, values) : []).map(field => {
+    const row = node('div', undefined, 'property-row');
+    row.append(node('dt', field.label), node('dd', field.value === null ? '不适用' : String(field.value)));
+    return row;
+  }));
 }
 
 /** Show local ID conflicts immediately; the server remains authoritative when saving. */
@@ -495,12 +503,18 @@ async function removeDraft(target) {
 
 async function exportPatch() {
   if (state.busy || state.loading) return;
+  if (state.exportMode !== 'automatic') { status('请重启编辑器服务，启用自动备份与覆盖。', true); return; }
   if (state.dirty) { status('表单尚未暂存，请先暂存修改后再导出。', true); $('stage').focus(); return; }
-  setBusy(true); status('正在生成双端补丁并重新解码核验…');
+  setBusy(true); status('正在校验补丁、备份并覆盖双端文件…');
   try {
     const result = await api('/api/export', {revision: state.revision});
-    $('export-result').textContent = `已导出并通过离线校验：${result.path}。游戏内效果待验收。`;
-    status(`补丁导出成功 · ${result.verification.operations} 个操作 · 原游戏文件未改动`);
+    if (result.status !== 'applied') throw new Error('编辑器服务未更新，请重启服务后重试。');
+    const message = `已覆盖并核验双端文件，共 ${result.operations} 个操作。覆盖前备份：${result.backup_path}。${result.cleanup_warning || ''}游戏内效果待重新加载后验收。`;
+    $('export-result').textContent = message;
+    status(message);
+    try { sessionStorage.setItem('last-apply-result', message); } catch { /* Storage may be disabled. */ }
+    state.dirty = false;
+    location.reload();
   } catch (error) { status(error.message, true); }
   finally { setBusy(false); }
 }
@@ -526,7 +540,9 @@ async function start() {
       return;
     }
     Object.assign(state, {items: data.items, fields: data.fields, edits: data.edits,
-      revision: data.revision, token: data.token, ready: true});
+      revision: data.revision, token: data.token, ready: true, exportMode: data.export_mode});
+    $('export').title = state.exportMode === 'automatic' ?
+      '备份后替换服务端 Object.dbf 与客户端 Main 两份文件' : '请重启编辑器服务以启用自动覆盖';
     $('category').replaceChildren(...data.categories.map(category => {
       const count = state.items.filter(item => item.is_item && (category.key === 'all' || item.categories.includes(category.key))).length;
       const option = node('option', `${category.label}（${count}）`); option.value = category.key; return option;
@@ -540,7 +556,8 @@ async function start() {
       const input = node('input');
       Object.assign(input, {id: label.htmlFor, type: 'number', min: field.min, max: field.max, step: 1, required: true});
       input.title = `Object 偏移 ${field.offset}，有符号整数`;
-      const host = field.group === 'resistances' ? $('resistance-stats') : field.group === 'recovery' ? $('recovery-stats') : $('stats');
+      const hosts = {weapon: 'weapon-stats', resistances: 'resistance-stats', recovery: 'recovery-stats'};
+      const host = $(hosts[field.group] || 'stats');
       wrap.append(label, input); host.append(wrap);
     }
     const labels = {server_object: '服务端本地基线', client_object: '客户端物件表', client_language: '客户端语言表'};
@@ -572,6 +589,10 @@ async function start() {
     renderItems(); await renderDrafts();
     const requested = Number(params.get('id'));
     await select(state.items.some(i => i.id === requested) ? requested : 10);
+    try {
+      const applied = sessionStorage.getItem('last-apply-result');
+      if (applied) { $('export-result').textContent = applied; status(applied); sessionStorage.removeItem('last-apply-result'); }
+    } catch { /* The export remains committed if browser storage is unavailable. */ }
     if (creatures && params.get('library') === 'creatures') {
       $('creature-search').value = params.get('npc') || '';
       creatures.initialMap = params.get('map') || 'all';

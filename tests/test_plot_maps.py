@@ -107,7 +107,8 @@ class PlotDecoderTests(unittest.TestCase):
 class RealScriptMapTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        state = EditorState(ROOT, ROOT / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf')
+        from xyj_content.settings import default_config
+        state = EditorState(ROOT, config=default_config())
         cls.catalog = CreatureCatalog(ROOT, state.loaded, directory=ROOT / 'output/editor/npc-snapshot-script-v3')
 
     def test_20799_is_in_element_city_with_source_and_without_fake_saved_instances(self):

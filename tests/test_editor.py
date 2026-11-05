@@ -26,13 +26,15 @@ from xyj_content.language import decode_language
 from xyj_content.models import item_model, read_mesh, texture_png
 from xyj_content.objects import find_unique, view_record
 from xyj_content.patch import PAYLOAD_PATHS
+from xyj_content.settings import default_config
 
 
 class EditorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.loaded = load_inputs(Inputs(PROJECT / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf',
-                                       PROJECT / 'swdol/Main/Object.dbf', PROJECT / 'swdol/Main/Language.DBF'))
+        # Use the immutable pre-319 export baseline: live client data now contains ID 319.
+        baseline = PROJECT / 'output/editor/patches/20261104-165921-7d73b3ee/baseline'
+        cls.loaded = load_inputs(Inputs(*(baseline / relative for relative in PAYLOAD_PATHS.values())))
 
     def edit(self, source=10, target=None):
         item = item_detail(self.loaded, source)
@@ -154,7 +156,11 @@ class EditorTests(unittest.TestCase):
 
     def test_expanded_schema_uses_actual_signed_byte_and_word_limits(self):
         schema = {field['key']: field for field in field_schema()}
-        self.assertEqual(len(schema), 26)
+        self.assertEqual(len(schema), 27)
+        self.assertEqual((schema['range']['offset'], schema['range']['min'], schema['range']['max']),
+                         (140, -32768, 32767))
+        for key in ('damage', 'delay', 'range'):
+            self.assertEqual(schema[key]['group'], 'weapon')
         for key in ('resist_fire', 'resist_water', 'resist_wind', 'resist_thunder', 'resist_light', 'resist_dark'):
             self.assertEqual((schema[key]['min'], schema[key]['max'], schema[key]['group']), (-128, 127, 'resistances'))
         for key in ('hp_recovery', 'mp_recovery'):
@@ -188,6 +194,46 @@ class EditorTests(unittest.TestCase):
         edit['stats']['guard'] = 5
         with self.assertRaises(ContentError):
             validate_edits(self.loaded, [edit])
+
+    def test_weapon_fields_write_only_confirmed_bytes_and_preserve_old_draft_range(self):
+        edit = self.edit()
+        edit['stats'] = {'damage': 70, 'delay': 48, 'range': 120}
+        blobs, changes = prepare_edits(self.loaded, [edit])
+        allowed = {104, 105, 140, 141, 144, 145, 146, 147}
+        for key, original in (('server_object', self.loaded.server), ('client_object', self.loaded.client)):
+            after = decode_table(blobs[key])
+            for before, record in zip(original.records, after.records):
+                if struct.unpack_from('<I', before, 4)[0] == 10:
+                    self.assertTrue(all(a == b or index in allowed for index, (a, b) in enumerate(zip(before, record))))
+                    self.assertEqual((struct.unpack_from('<h', record, 104)[0],
+                                      struct.unpack_from('<h', record, 140)[0],
+                                      struct.unpack_from('<i', record, 144)[0]), (70, 120, 48))
+                else:
+                    self.assertEqual(before, record)
+        self.assertEqual([field['field'] for field in changes[0]['fields']], ['伤害力', '延迟', '距离'])
+        self.assertEqual(decode_language(blobs['client_language']), self.loaded.language)
+        legacy = self.edit(target=319)
+        legacy['stats'] = {'damage': 70, 'delay': 32}
+        blobs, changes = prepare_edits(self.loaded, [legacy])
+        for key, original in (('server_object', self.loaded.server), ('client_object', self.loaded.client)):
+            record = find_unique(decode_table(blobs[key]), 319)[1]
+            self.assertEqual(record[140:142], find_unique(original, 10)[1][140:142])
+        self.assertNotIn('距离', [field['field'] for field in changes[0]['fields']])
+
+    def test_accepted_319_pair_matches_screenshot_and_can_edit_weapon_fields(self):
+        export = PROJECT / 'output/editor/patches/20261104-165921-7d73b3ee'
+        loaded = load_inputs(Inputs(*(export / relative for relative in PAYLOAD_PATHS.values())))
+        item = item_detail(loaded, 319)
+        self.assertTrue(item['editable'])
+        self.assertEqual([item['stats'][key] for key in ('damage', 'delay', 'range')], [70, 32, 90])
+        edit = {'source_id': 319, 'target_id': 319, 'name': item['name'],
+                'description': item['description'], 'stats': {'damage': 80, 'delay': 30, 'range': 100}}
+        blobs, _ = prepare_edits(loaded, [edit])
+        for side in ('server_object', 'client_object'):
+            record = find_unique(decode_table(blobs[side]), 319)[1]
+            self.assertEqual((struct.unpack_from('<h', record, 104)[0],
+                              struct.unpack_from('<i', record, 144)[0],
+                              struct.unpack_from('<h', record, 140)[0]), (80, 30, 100))
 
     def test_all_new_fields_accept_boundaries_and_reject_invalid_types_and_overflow(self):
         schema = {field['key']: field for field in field_schema() if field['group'] != 'basic'}
@@ -256,7 +302,7 @@ class EditorTests(unittest.TestCase):
 class HTTPBoundaryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.state = EditorState(PROJECT, PROJECT / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf')
+        cls.state = EditorState(PROJECT, config=default_config())
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(cls.state))
         cls.thread = Thread(target=cls.server.serve_forever, daemon=True); cls.thread.start()
         cls.url = f'http://127.0.0.1:{cls.server.server_port}'
@@ -280,6 +326,15 @@ class HTTPBoundaryTests(unittest.TestCase):
             with self.subTest(item=item, profile=profile):
                 model = json.load(urlopen(self.url + f'/api/model/{item}?mode=equipped&profile={profile}'))
                 self.assertEqual(model['profile'], expected)
+
+    def test_reported_body_previews_use_actual_frames_and_do_not_leak_between_items(self):
+        for item, profile, frame in ((3130, 'fairy_male', 3012), (3126, 'fairy_female', 4224),
+                                     (3138, 'fairy_female', 4470), (3211, 'human_female', 3020),
+                                     (3130, 'fairy_male', 3012)):
+            with self.subTest(item=item):
+                model = json.load(urlopen(self.url + f'/api/model/{item}?mode=equipped&profile=auto'))
+                self.assertEqual(model['profile'], profile)
+                self.assertEqual(model['meshes'][0]['texture_url'], f'/api/sprite/{frame}/0.png')
 
     def test_static_allowlist_does_not_expose_game_or_draft_files(self):
         for path in ('/../swdol/Main/Object.dbf', '/output/editor/draft.json', '/vendor/../../tools/editor_server.py'):

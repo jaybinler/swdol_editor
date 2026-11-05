@@ -29,7 +29,8 @@ FIELDS = {
     "defense": ("防御力", 108, "h"), "armor": ("装甲防御力", 110, "h"),
     "hp": ("体力上限", 112, "h"), "mp": ("灵力上限", 114, "h"),
     "hit": ("命中率", 124, "h"), "evasion": ("回避率", 126, "h"),
-    "delay": ("延迟（原始值）", 144, "i"), "weight": ("重量", 172, "i"),
+    # SWDOL.exe 0x583aa9..0x583ad3 reads Object+0x8c as a signed word.
+    "range": ("距离", 140, "h"), "delay": ("延迟", 144, "i"), "weight": ("重量", 172, "i"),
     "hp_recovery": ("体力回复", 130, "h"), "mp_recovery": ("灵力回复", 132, "h"),
     **{f"resist_{key}": (label, offset, "b") for key, label, offset in RESISTANCES},
 }
@@ -40,7 +41,9 @@ def field_schema() -> list[dict]:
     fields = []
     for key, (label, offset, fmt) in FIELDS.items():
         bits = struct.calcsize('<' + fmt) * 8
-        group = 'resistances' if key.startswith('resist_') else 'recovery' if key.endswith('_recovery') else 'basic'
+        group = ('weapon' if key in ('damage', 'delay', 'range') else
+                 'resistances' if key.startswith('resist_') else
+                 'recovery' if key.endswith('_recovery') else 'basic')
         fields.append({"key": key, "label": label, "offset": offset,
                        "min": -(2**(bits - 1)), "max": 2**(bits - 1) - 1, "group": group})
     return fields

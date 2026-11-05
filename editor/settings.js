@@ -64,7 +64,8 @@ export class SettingsPanel {
       const row = this.node('div', undefined, 'path-input');
       const input = this.node('input');
       Object.assign(input, {id: label.htmlFor, type: 'text', spellcheck: false, autocomplete: 'off', maxLength: 4096});
-      input.placeholder = field.key === 'client_root' ? '例如 D:\\Games\\swdol' : '';
+      input.placeholder = field.key === 'client_root' ? '例如 D:\\Games\\swdol' :
+        field.key === 'server_target' ? '\\\\服务器\\共享名\\qingfeng\\Object.dbf' : '';
       const browse = this.node('button', '选择…'); browse.type = 'button';
       browse.setAttribute('aria-label', `选择${field.label}`);
       browse.addEventListener('click', () => this.browse(field.kind, input));

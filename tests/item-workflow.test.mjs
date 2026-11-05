@@ -1,6 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {operationMode, targetIdError, replaceDraftOperation, displayProperties} from '../editor/item-workflow.js';
+import {operationMode, targetIdError, replaceDraftOperation, displayProperties, weaponProperties, hasWeaponProperties} from '../editor/item-workflow.js';
+
+test('weapon visibility follows weapon/offhand category rather than equipment type or nonzero values', () => {
+  for (const slot of ['mainhand', 'offhand']) {
+    assert.equal(hasWeaponProperties({type:2, categories:[slot, 'weapon'], stats:{damage:0,delay:0,range:0}}), true);
+  }
+  for (const category of ['head', 'body', 'throwing', 'treasure', 'ordinary', 'other']) {
+    assert.equal(hasWeaponProperties({type:2, categories:[category], stats:{damage:70,delay:32,range:90}}), false);
+  }
+  assert.equal(hasWeaponProperties(null), false);
+  assert.equal(hasWeaponProperties({type:2}), false);
+});
+
+test('weapon overview preserves zero and negative values and falls back for invalid form input', () => {
+  const baseline = {damage:70, delay:32, range:90};
+  const current = {damage:0, delay:-2147483648, range:-32768};
+  assert.deepEqual(weaponProperties(baseline, current).map(field => field.value), [0,-2147483648,-32768]);
+  assert.deepEqual(weaponProperties(baseline, {damage:NaN, delay:undefined}).map(field => field.value), [70,32,90]);
+  assert.deepEqual(weaponProperties(baseline, current, false).map(field => field.value), [null,null,null]);
+  assert.deepEqual(baseline, {damage:70, delay:32, range:90});
+  assert.deepEqual(current, {damage:0, delay:-2147483648, range:-32768});
+});
 
 const edit = (source, target, name = '测试') => ({source_id: source, target_id: target, name});
 
