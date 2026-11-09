@@ -29,11 +29,14 @@ from xyj_content.patch import PAYLOAD_PATHS
 from xyj_content.settings import default_config
 
 
+from xyj_content.verification_inputs import paired_fixture
+
+
 class EditorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Use the immutable pre-319 export baseline: live client data now contains ID 319.
-        baseline = PROJECT / 'output/editor/patches/20261104-165921-7d73b3ee/baseline'
+        baseline = paired_fixture(PROJECT) / 'baseline'
         cls.loaded = load_inputs(Inputs(*(baseline / relative for relative in PAYLOAD_PATHS.values())))
 
     def edit(self, source=10, target=None):
@@ -221,7 +224,7 @@ class EditorTests(unittest.TestCase):
         self.assertNotIn('距离', [field['field'] for field in changes[0]['fields']])
 
     def test_accepted_319_pair_matches_screenshot_and_can_edit_weapon_fields(self):
-        export = PROJECT / 'output/editor/patches/20261104-165921-7d73b3ee'
+        export = paired_fixture(PROJECT)
         loaded = load_inputs(Inputs(*(export / relative for relative in PAYLOAD_PATHS.values())))
         item = item_detail(loaded, 319)
         self.assertTrue(item['editable'])

@@ -216,7 +216,8 @@ def build_patch(root: Path, requested: Path, loaded: Loaded, spec: CloneSpec) ->
         ).encode("utf-8-sig"))
         if destination.exists():
             raise ContentError("输出目录在构建期间已被创建，拒绝覆盖。")
-        os.rename(staging, destination)
+        from .files import move_path
+        move_path(staging,destination)
         staging = None
         return result
     except OSError as exc:

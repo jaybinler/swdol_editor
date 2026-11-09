@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import os
+import re
 import shutil
 import struct
 import tempfile
@@ -13,16 +14,21 @@ import uuid
 from .binary import ContentError, read_bytes
 from .catalog import Inputs, load_inputs
 from .editor import export_editor_patch
-from .files import atomic_write, output_path, read_json, sha256, write_json
+from .files import atomic_write, output_path, read_json, sha256, write_json,move_path
 from .patch import PAYLOAD_PATHS
 
 BACKUP_PATHS = {**PAYLOAD_PATHS, 'settings': 'state/settings.json', 'draft': 'state/draft.json'}
+BACKUP_PATHS['actor'] = 'client/Act/all_char.act'
+BACKUP_PATHS['source_draft'] = 'state/source-draft.json'
 
 
 def _backup_relative(role: str) -> str:
     from .acquisition import SCRIPT_NAME
     if role in BACKUP_PATHS:
         return BACKUP_PATHS[role]
+    if role.startswith('model:'):
+        from .model_compiler import role_relative
+        return role_relative(role)
     if role.startswith('script:') and SCRIPT_NAME.fullmatch(role[7:]):
         return 'server/qingfeng/ASM/' + role[7:]
     raise ContentError('备份文件角色无效。')
@@ -102,6 +108,25 @@ def _current(path: Path) -> bytes | None:
         return None
 
 
+def workspace_inputs(controller,*,creature=False,allow_package=False):
+    """Reject a stale process before publication and freeze inputs whose concurrent changes must be preserved."""
+    state=controller.workspace
+    if controller.document is not None and (not controller.path.exists() or read_json(controller.path)!=controller.document):
+        raise ContentError('另一编辑器已更新数据源，请重启当前编辑器后再发布。')
+    path=state.creature_draft_path if creature else state.draft_path
+    edits=state.creature_edits if creature else state.edits
+    revision=state.creature_revision if creature else state.revision
+    if path.exists():
+        current=read_json(path)
+        if current.get('revision')!=revision or current.get('edits')!=edits and not (allow_package and not current.get('edits')):
+            raise ContentError('草稿已由另一编辑器修改，请重启当前编辑器并核对草稿。')
+    elif edits and not allow_package:
+        legacy=controller.root/'output/editor/draft.json'
+        if creature or not legacy.exists() or read_json(legacy).get('edits')!=edits:
+            raise ContentError('草稿文件已变化，请重新读取并暂存。')
+    return {p:sha256(raw) if (raw:=_current(p)) is not None else None for p in (controller.path,path)}
+
+
 def _stage_file(path: Path, blob: bytes, staged: Path | None = None) -> Path:
     """Flush a sibling file before replacement; supports local paths and authenticated UNC shares."""
     created = False
@@ -124,7 +149,7 @@ def _stage_file(path: Path, blob: bytes, staged: Path | None = None) -> Path:
 
 
 def _replace_file(staged: Path, target: Path):
-    os.replace(staged, target)
+    move_path(staged,target,replace=True)
 
 
 def _journal(root: Path):
@@ -135,12 +160,25 @@ def _validate_journal(root: Path, folder: Path) -> dict:
     manifest = read_json(folder / 'manifest.json')
     if manifest.get('format') != 'xyj-auto-deploy/v1' or manifest.get('root') != str(root.resolve()):
         raise ContentError('自动覆盖备份记录无效，请保留备份并检查。')
+    if 'publication' in manifest:
+        publication=manifest['publication']
+        if (not isinstance(publication,dict) or not re.fullmatch('[0-9a-f]{64}',publication.get('key','')) or
+                not re.fullmatch('[0-9a-f]{64}',publication.get('manifest_sha256','')) or
+                Path(publication['staged']).parent != root.resolve()/'output/editor/patches' or
+                not re.fullmatch(r'\.next-[0-9a-f]{32}',Path(publication['staged']).name)):
+            raise ContentError('发布回执或补丁暂存索引无效。')
+        if publication.get('request_id') and str(uuid.UUID(publication['request_id']))!=publication['request_id']:
+            raise ContentError('发布请求回执索引无效。')
     entries = manifest.get('entries', [])
+    if not isinstance(entries,list) or any(not isinstance(entry,dict) for entry in entries):
+        raise ContentError('自动覆盖备份文件清单无效。')
     roles = [entry.get('role', '') for entry in entries]
-    scripts = roles[3:-2]
-    if (roles[:3] != list(PAYLOAD_PATHS) or roles[-2:] != ['settings', 'draft'] or
-            len(roles) != len(set(roles)) or len(scripts) > 64 or
-            any(not role.startswith('script:') for role in scripts)):
+    creature = manifest.get('kind') == 'creature'
+    partial = creature and manifest.get('state_pending') is True
+    scripts = roles[3:] if partial else roles[3:-2]
+    if (roles[:3] != list(PAYLOAD_PATHS) or not partial and roles[-2:] != ['settings', 'draft'] or
+            len(roles) != len(set(roles)) or len(scripts) > (258 if creature else 65) or
+            any(role!='source_draft' and (role != 'actor' and not role.startswith('model:') if creature else not role.startswith('script:')) for role in scripts)):
         raise ContentError('自动覆盖备份文件清单无效。')
     for index, entry in enumerate(entries):
         target = Path(entry['target'])
@@ -152,52 +190,96 @@ def _validate_journal(root: Path, folder: Path) -> dict:
                 raise ContentError('脚本恢复位置必须在所选服务端的 ASM 目录。')
         if entry['role'] == 'settings' and target != root.resolve() / 'output/editor/settings.json':
             raise ContentError('设置恢复位置无效。')
-        if entry['role'] == 'draft' and (not target.is_relative_to(root.resolve() / 'output/editor/workspaces') or target.name != 'draft.json'):
+        if entry['role'] == 'actor' and target.resolve() != (Path(entries[1]['target']).parent.parent/'Act/all_char.act').resolve():
+            raise ContentError('角色动作恢复位置无效。')
+        if entry['role'].startswith('model:'):
+            from .model_compiler import role_relative
+            client=Path(entries[1]['target']).parent.parent.resolve()
+            expected=client/role_relative(entry['role'])[7:]
+            if target.resolve()!=expected.resolve() or not target.resolve().is_relative_to(client):
+                raise ContentError('模型恢复位置必须位于所选客户端目录。')
+            if entry['before'] is None and expected.suffix.upper() not in ('.PLY','.TEX'):
+                raise ContentError('索引文件缺少原始备份。')
+        if entry['role'] in ('draft','source_draft') and (not target.is_relative_to(root.resolve() / 'output/editor/workspaces') or target.name != ('creatures.json' if creature else 'draft.json')):
             raise ContentError('草稿恢复位置无效。')
         if entry['before'] is not None and sha256(read_bytes(folder / entry['backup'])) != entry['before']:
             raise ContentError('覆盖前备份校验失败，已停止自动恢复。')
+        if entry.get('restore') and (entry['role']!='settings' or entry['restore']!='state/restore-settings.json' or
+                                    sha256(read_bytes(folder/entry['restore']))!=entry.get('restore_sha256')):
+            raise ContentError('恢复配置的迁移副本无效。')
+        for source in entry.get('inputs',[]):
+            if (entry['role']!='settings' or output_path(root,Path(source['target']))!=Path(source['target']).absolute() or
+                    not re.fullmatch(r'inputs/[0-9a-f]{16}/data',source['backup']) or
+                    sha256(read_bytes(folder/source['backup']))!=source['sha256']):
+                raise ContentError('恢复输入记录或校验无效。')
     return manifest
 
 
-def _rollback(root: Path, folder: Path, manifest: dict):
+def _rollback(root: Path, folder: Path, manifest: dict, query=None):
+    if (folder/'npc-journal.json').exists() and query is None:
+        raise ContentError('怪物发布尚未完成；请停止相关游戏服务后，使用“恢复上次发布”恢复数据库和文件。')
     failures = []
+    committed=manifest['phase']=='committed'
     for entry in reversed(manifest['entries']):
         target = Path(entry['target'])
         try:
             current = _current(target)
             digest = sha256(current) if current is not None else None
-            if digest == entry['before']:
+            relocated=committed and bool(entry.get('restore'))
+            if committed and entry.get('inputs'):
+                from .publication import restore_protected_inputs
+                restore_protected_inputs(root,folder,entry['inputs'])
+            restored_hash=entry['restore_sha256'] if relocated else entry['before']
+            if digest == restored_hash:
                 continue
-            if digest != entry['after']:
+            if digest not in (entry['before'],entry['after']):
                 raise ContentError('文件又被外部修改，未覆盖该外部修改')
             if entry['before'] is None:
-                # Only editor state may have been newly created; game files must already exist.
-                if entry['role'] not in ('draft', 'settings'):
+                if entry['role'] not in ('draft', 'source_draft', 'settings') and not entry['role'].startswith('model:'):
                     raise ContentError('缺少游戏文件的原始备份')
                 target.unlink()
             else:
-                staged = _stage_file(target, read_bytes(folder / entry['backup']))
+                staged = _stage_file(target, read_bytes(folder / (entry['restore'] if relocated else entry['backup'])))
                 try:
                     _replace_file(staged, target)
                 finally:
                     staged.unlink(missing_ok=True)
             restored = _current(target)
-            if (sha256(restored) if restored is not None else None) != entry['before']:
+            if (sha256(restored) if restored is not None else None) != restored_hash:
                 raise ContentError('回滚后核验失败')
         except (ContentError, OSError) as exc:
             failures.append(f'{target}：{exc}')
+    if (folder/'npc-journal.json').exists():
+        try:
+            from .creature_database import rollback_points
+            rollback_points(query,folder/'npc-journal.json')
+        except Exception as exc:
+            failures.append('NPC 数据库：'+str(exc))
     manifest['phase'] = 'rollback_required' if failures else 'rolled_back'
     manifest['recovery_errors'] = failures
     write_json(folder / 'manifest.json', manifest)
     if failures:
         raise ContentError('覆盖未完成，以下文件无法自动恢复；备份已保留：' + '；'.join(failures))
+    if manifest.get('publication'):
+        from .publication import discard
+        discard(root,manifest['publication'])
+
+
+def _restore_previous(root: Path, folder: Path):
+    """After a fully verified rollback, restore the preceding successful backup instead of discarding it."""
+    from .publication import remove_tree
+    previous=folder.parent/'previous'
+    if previous.exists():
+        _validate_journal(root,previous)
+        remove_tree(root,folder,[folder.parent])
+        move_path(previous,folder)
 
 
 def _recover_locked(root: Path):
     folder = _journal(root)
     previous = folder.parent / 'previous'
     if not folder.exists() and previous.exists():
-        os.rename(previous, folder)
+        move_path(previous, folder)
     if folder.exists():
         manifest = _validate_journal(root, folder)
         if manifest['phase'] not in ('committed', 'rolled_back'):
@@ -209,6 +291,11 @@ def _recover_locked(root: Path):
                 if staged.parent != Path(entry['target']).parent or not staged.name.startswith('.xyj-apply-'):
                     raise ContentError('恢复记录中的暂存文件位置无效。')
                 staged.unlink(missing_ok=True)
+        if manifest['phase']=='committed' and manifest.get('publication'):
+            from .publication import finish
+            finish(root,manifest['publication'])
+        if manifest['phase']=='rolled_back' and previous.exists():
+            _restore_previous(root,folder)
         _remove_local(root, previous)
     for unused in folder.parent.glob('.next-*') if folder.parent.exists() else ():
         _remove_local(root, unused)
@@ -261,19 +348,28 @@ def apply_workspace(controller, revision: int) -> dict:
     state = controller.workspace
     if state is None or type(revision) is not int or revision != state.revision:
         raise ContentError('导出版本已过期，请刷新。')
+    state.load_creature_draft()
+    if state.creature_edits:
+        raise ContentError('存在怪物草稿，先导出并处理怪物草稿后再发布道具，避免基线切换隐藏草稿。')
     targets = deployment_targets(root, controller.config)
     for key, original in zip(PAYLOAD_PATHS, state.loaded.blobs):
         if read_bytes(targets[key]) != original:
             raise ContentError(f'覆盖目标与编辑基线不一致，请重新校验数据源：{targets[key]}')
     with deployment_lock(root):
         _recover_locked(root)
+        inputs=workspace_inputs(controller)
+        from .publication import prepare as prepare_publication, finish as finish_publication, check_legacy
+        check_legacy(root)
+        from .publication import restore_inputs
+        restore_document=restore_inputs(root,controller.document)
         pending = output_path(root, Path('output/editor/pending'))
         pending.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=pending, prefix='apply-') as temporary:
+        with tempfile.TemporaryDirectory(dir=pending, prefix='apply-',ignore_cleanup_errors=True) as temporary:
             from .acquisition import has_acquisition, NATIVE_SHA256
             acquisition = state.acquisition() if has_acquisition(state.edits) else None
             exported = export_editor_patch(Path(temporary), state.loaded, state.edits, acquisition=acquisition)
             package = Path(exported['path'])
+            publication = prepare_publication(root,package)
             blobs = {key: read_bytes(package / relative) for key, relative in PAYLOAD_PATHS.items()}
             script_meta = read_json(package / 'manifest.json').get('scripts', {})
             script_directory = None
@@ -325,6 +421,9 @@ def apply_workspace(controller, revision: int) -> dict:
                     'validated_files': fingerprints, 'saved_at': datetime.now(timezone.utc).isoformat()}
         new_draft = {'format': 'xyj-editor-draft/v1', 'sources': hashes, 'revision': state.revision + 1, 'edits': []}
         payloads = [(key, targets[key], blobs[key]) for key in targets]
+        if state.draft_path!=draft:
+            source_draft={'format':'xyj-editor-draft/v1','sources':state.hashes,'revision':state.revision+1,'edits':[]}
+            payloads.append(('source_draft',state.draft_path,json.dumps(source_draft,ensure_ascii=False,indent=2).encode('utf-8')))
         payloads += [('settings', controller.path, json.dumps(document, ensure_ascii=False, indent=2).encode('utf-8')),
                      ('draft', draft, json.dumps(new_draft, ensure_ascii=False, indent=2).encode('utf-8'))]
         folder = _journal(root)
@@ -333,6 +432,8 @@ def apply_workspace(controller, revision: int) -> dict:
         entries = []
         for index, (role, target, blob) in enumerate(payloads):
             original = _current(target)
+            if target in inputs and (sha256(original) if original is not None else None)!=inputs[target]:
+                raise ContentError('发布准备期间设置或草稿被修改，未覆盖这些输入。')
             if role in PAYLOAD_PATHS and original != state.loaded.blobs[list(PAYLOAD_PATHS).index(role)]:
                 raise ContentError(f'覆盖前文件发生变化：{target}')
             if role.startswith('script:') and (original is None or sha256(original) != script_meta[role[7:]]['source_sha256']):
@@ -344,15 +445,21 @@ def apply_workspace(controller, revision: int) -> dict:
                 atomic_write(next_backup / entry['backup'], original)
                 if read_bytes(next_backup / entry['backup']) != original:
                     raise ContentError('本地备份校验失败，未覆盖目标文件。')
+            if role=='settings' and restore_document is not None:
+                entry.update(restore='state/restore-settings.json',restore_sha256=sha256(restore_document))
+                atomic_write(next_backup/entry['restore'],restore_document)
+            if role=='settings':
+                from .publication import protect_inputs
+                entry['inputs']=protect_inputs(root,next_backup,json.loads(restore_document) if restore_document else controller.document)
             entries.append(entry)
         manifest = {'format': 'xyj-auto-deploy/v1', 'root': str(root.resolve()), 'phase': 'prepared',
                     'created_at': datetime.now(timezone.utc).isoformat(), 'entries': entries,
-                    'changes': exported['changes'], 'verification': exported['verification']}
+                    'changes': exported['changes'], 'verification': exported['verification'], 'publication': publication}
         write_json(next_backup / 'manifest.json', manifest)
         _validate_journal(root, next_backup)
         if folder.exists():
-            os.rename(folder, folder.parent / 'previous')
-        os.rename(next_backup, folder)
+            move_path(folder, folder.parent / 'previous')
+        move_path(next_backup, folder)
         candidate = None
         try:
             # Prepare every replacement before changing any target.
@@ -376,7 +483,7 @@ def apply_workspace(controller, revision: int) -> dict:
         except Exception as exc:
             _rollback(root, folder, manifest)
             try:
-                _remove_local(root, folder.parent / 'previous')
+                _restore_previous(root, folder)
             except (OSError, ContentError):
                 pass  # Retry startup cleanup; the current rollback set is verified.
             raise ContentError(f'覆盖失败，已恢复覆盖前文件，草稿保留：{exc}') from exc
@@ -396,9 +503,10 @@ def apply_workspace(controller, revision: int) -> dict:
         # Rotation errors must not turn a committed write into an apparent failed deployment.
         cleanup_warning = ''
         try:
+            cleanup_warning = finish_publication(root,publication)
             _remove_local(root, folder.parent / 'previous')
         except (OSError, ContentError):
-            cleanup_warning = '旧备份暂未清理，将在下次启动时重试。'
+            cleanup_warning = '发布已成功；旧备份或补丁暂未清理，将在下次启动时重试。'
         return {'status': 'applied', 'backup_path': str(folder), 'targets': {k: str(v) for k, v in targets.items()},
                 'verification': {**exported['verification'], 'target_files_verified': True},
                 'operations': len(exported['changes']), 'workspace_generation': controller.generation,

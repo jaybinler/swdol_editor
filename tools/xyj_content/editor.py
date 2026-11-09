@@ -184,6 +184,9 @@ def verify_editor_patch(root: Path, directory: Path) -> dict:
     """Rebuild expected semantics from immutable baselines and compare all records and strings."""
     directory = output_path(root, directory)
     manifest = read_json(directory / 'manifest.json')
+    if manifest.get('format') == 'xyj-creature-patch/v1':
+        from .creature_editor import verify_patch
+        return verify_patch(directory)
     if manifest.get('format') != 'xyj-editor-patch/v1':
         raise ContentError("不是编辑器补丁格式。")
     paths = []
@@ -292,7 +295,8 @@ def export_editor_patch(root: Path, loaded: Loaded, edits: list, *, acquisition=
             'manifest.json 记录修改字段与来源。此工具不会部署、发道具或重启服务器。\n'
             '如含 server/qingfeng/ASM 编号脚本，须与道具文件配套更新。奖励沿用原任务条件；原生发奖按顺序执行，非事务。\n'
         ).encode('utf-8-sig'))
-        os.rename(staging, destination)
+        from .files import move_path
+        move_path(staging,destination)
         return {'path': str(destination), 'verification': result, 'changes': changes}
     except OSError as exc:
         raise ContentError(f"导出补丁失败：{exc.strerror}") from exc

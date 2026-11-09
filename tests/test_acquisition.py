@@ -27,11 +27,14 @@ from xyj_content.plot_maps import decode_script
 from xyj_content.settings import default_config
 
 
+from xyj_content.verification_inputs import paired_fixture
+
+
 class AcquisitionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         (ROOT / 'output/editor/verification-0.11').mkdir(parents=True, exist_ok=True)
-        baseline = ROOT / 'output/editor/patches/20261104-165921-7d73b3ee/baseline/client/Main'
+        baseline = paired_fixture(ROOT) / 'baseline/client/Main'
         cls.config = {**default_config(), 'client_object': str(baseline/'Object.dbf'), 'language': str(baseline/'Language.DBF')}
         cls.state = EditorState(ROOT, config=cls.config)
         cls.catalog = cls.state.acquisition()
@@ -203,7 +206,7 @@ class AcquisitionDeploymentTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT / 'output/editor/verification-0.11')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        baseline = ROOT / 'output/editor/patches/20261104-165921-7d73b3ee/baseline'
+        baseline = paired_fixture(ROOT) / 'baseline'
         for relative in PAYLOAD_PATHS.values():
             target = self.root / relative; target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(baseline / relative, target)
@@ -234,6 +237,7 @@ class AcquisitionDeploymentTests(unittest.TestCase):
     def test_combined_apply_rebinds_snapshot_and_reopens_with_all_three_routes(self):
         from xyj_content.deployment import apply_workspace, _validate_journal
         from xyj_content.settings import SettingsController
+        source_draft=self.state.draft_path.read_bytes()
         result = apply_workspace(self.controller, self.state.revision)
         self.assertEqual(result['status'], 'applied')
         current = self.controller.workspace
@@ -242,7 +246,10 @@ class AcquisitionDeploymentTests(unittest.TestCase):
         self.assertTrue(any(319 in row['items'] for row in nodes['shops']))
         self.assertTrue(any(319 in row['items'] for row in nodes['rewards']))
         manifest = _validate_journal(self.root, Path(result['backup_path']))
-        self.assertEqual(len(manifest['entries']), 7)
+        self.assertEqual({e['role'] for e in manifest['entries']},{'server_object','client_object','client_language',
+                         'script:TALK0001.EXE','script:TALK0010.EXE','source_draft','settings','draft'})
+        entry=next(e for e in manifest['entries'] if e['role']=='source_draft')
+        self.assertEqual((Path(result['backup_path'])/entry['backup']).read_bytes(),source_draft)
         reopened = SettingsController(self.root, lambda cfg: EditorState(self.root, config=cfg))
         self.assertIsNotNone(reopened.workspace, reopened.setup_error)
         self.assertEqual(reopened.workspace.edits, [])

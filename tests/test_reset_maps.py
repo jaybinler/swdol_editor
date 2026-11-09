@@ -23,6 +23,9 @@ from xyj_content.reset_maps import build_reset_map_index, reset_candidates
 from xyj_content.settings import default_config
 
 
+from xyj_content.verification_inputs import paired_fixture
+
+
 def record(tid, candidates=(-1, -1, -1, -1, -1)):
     """Create one isolated NPC record without interpreting unrelated fields."""
     row = bytearray(832)
@@ -98,7 +101,7 @@ class ResetMapGraphTests(unittest.TestCase):
 class RealResetMapTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        baseline=ROOT/'output/editor/patches/20261104-165921-7d73b3ee/baseline/client/Main'
+        baseline=paired_fixture(ROOT) / 'baseline/client/Main'
         cls.state=EditorState(ROOT,config={**default_config(), 'npc_snapshot':'output/editor/npc-snapshot-script-v3-final',
              'client_object':str(baseline/'Object.dbf'),'language':str(baseline/'Language.DBF')})
         cls.catalog=cls.state.creatures()

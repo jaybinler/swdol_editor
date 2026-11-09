@@ -1,8 +1,12 @@
 {
   "name": "xyj-local-editor",
   "private": true,
-  "version": "0.11.3",
+  "version": "0.14.0",
   "type": "module",
-  "scripts": { "test": "node --test ../tests/item-workflow.test.mjs ../tests/item-drops.test.mjs ../tests/acquisition.test.mjs" },
-  "dependencies": { "three": "0.180.0" }
+  "scripts": {
+    "test": "node --test ../tests/item-workflow.test.mjs ../tests/item-drops.test.mjs ../tests/acquisition.test.mjs ../tests/creature-editor.test.mjs ../tests/model-operations.test.mjs"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  }
 }

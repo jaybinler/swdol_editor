@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 
 from .binary import ContentError
 
@@ -12,6 +13,22 @@ from .binary import ContentError
 def sha256(data: bytes) -> str:
     """Return a content digest without storing or printing file contents."""
     return hashlib.sha256(data).hexdigest()
+
+
+def retry_file_operation(operation):
+    """Retry only failed Windows access/sharing operations briefly; never use this helper for SQL or network requests."""
+    for attempt in range(5):
+        try:
+            return operation()
+        except OSError as exc:
+            if getattr(exc,'winerror',None) not in (5,32,33) or attempt==4:
+                raise
+            time.sleep(.05*(2**attempt))
+
+
+def move_path(source: Path,target: Path,*,replace=False):
+    """Commit one caller-validated path with bounded Windows sharing retries; preserve rename/replace semantics."""
+    return retry_file_operation(lambda:(os.replace if replace else os.rename)(source,target))
 
 
 def output_path(root: Path, requested: Path) -> Path:
@@ -36,12 +53,12 @@ def atomic_write(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        move_path(temporary,path,replace=True)
     except OSError as exc:
         raise ContentError(f"无法写入研究输出：{path}（{exc.strerror}）") from exc
     finally:
         if temporary is not None and temporary.exists():
-            temporary.unlink(missing_ok=True)
+            retry_file_operation(lambda:temporary.unlink(missing_ok=True))
 
 
 def write_json(path: Path, value: object) -> None:

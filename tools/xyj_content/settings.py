@@ -133,14 +133,18 @@ class SettingsController:
         self.config = default_config()
         self.setup_error = ''
         try:
-            from .deployment import recover_deployment
-            recover_deployment(self.root)
             if self.path.exists():
                 document = read_json(self.path)
                 if document.get('format') != 'xyj-settings/v1':
                     raise ContentError('设置文件版本无效。')
                 self.config = normalize_config(self.root, document['config'])
                 self.document = document
+            from .deployment import recover_deployment
+            recover_deployment(self.root)
+            if self.path.exists():
+                document=read_json(self.path)
+                self.config=normalize_config(self.root,document['config'])
+                self.document=document
                 self._check_files(document.get('validated_files', []))
             if server_override:
                 self.config['server_object'] = portable_path(self.root, server_override)
@@ -356,6 +360,8 @@ class SettingsController:
                     atomic_write(output_path(self.root, self.path.parent / 'secrets' / secret_file), cipher)
                 document = {'format': 'xyj-settings/v1', 'config': config, 'secret_file': secret_file,
                             'validated_files': pending['fingerprints'], 'saved_at': datetime.now(timezone.utc).isoformat()}
+                if self.document and self.document.get('model_projects'):
+                    document['model_projects'] = self.document['model_projects']
                 atomic_write(self.path, json.dumps(document, ensure_ascii=False, indent=2).encode('utf-8'))
                 self.workspace = pending['workspace']
                 self.workspace.token = self.token

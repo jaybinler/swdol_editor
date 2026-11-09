@@ -17,6 +17,9 @@ from xyj_content.settings import default_config
 from xyj_content.summon_maps import build_summon_map_index
 
 
+from xyj_content.verification_inputs import paired_fixture
+
+
 def npc(skills=()):
     """Build only the NPC skill slots needed by this pure index."""
     row = bytearray(832)
@@ -88,7 +91,7 @@ class SummonGraphTests(unittest.TestCase):
 class RealSummonMapTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        baseline=ROOT/'output/editor/patches/20261104-165921-7d73b3ee/baseline/client/Main'
+        baseline=paired_fixture(ROOT) / 'baseline/client/Main'
         cls.state=EditorState(ROOT,config={**default_config(),'npc_snapshot':'output/editor/npc-snapshot-script-v3-final',
             'client_object':str(baseline/'Object.dbf'),'language':str(baseline/'Language.DBF')})
         cls.catalog=cls.state.creatures()

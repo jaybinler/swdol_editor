@@ -26,12 +26,15 @@ from xyj_content.patch import PAYLOAD_PATHS
 from xyj_content.settings import SettingsController, default_config, input_path
 
 
+from xyj_content.verification_inputs import paired_fixture
+
+
 class AutoDeployTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        baseline = PROJECT / 'output/editor/patches/20261104-165921-7d73b3ee/baseline'
+        baseline = paired_fixture(PROJECT) / 'baseline'
         for relative in PAYLOAD_PATHS.values():
             p = self.root / relative
             p.parent.mkdir(parents=True, exist_ok=True)

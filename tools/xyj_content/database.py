@@ -70,16 +70,17 @@ def _query(config: dict, password: str, sql: str) -> str:
         raise ContentError('数据库返回格式不兼容。') from exc
 
 
-def read_npc_rows(config: dict, password: str) -> list[dict]:
+def read_npc_rows(config: dict, password: str, *, query=None) -> list[dict]:
     """Validate both schemas and project NPC fields only; account/player tables are never selected."""
     instances = []
+    execute = query if query is not None else lambda sql: _query(config,password,sql)
     for table in ('npcpool', 'npcpool_add_on'):
-        schema = _query(config, password, f'SHOW COLUMNS FROM {table};')
+        schema = execute(f'SHOW COLUMNS FROM {table};')
         names = {line.split('\t', 1)[0] for line in schema.splitlines()}
         if not set((*FIELDS, 'Removed')).issubset(names):
             raise ContentError(f'{table} 缺少 NPC 必需字段。')
         expressions = [f'HEX(`{field}`)' if field in ('RoleName', 'NickName') else f'`{field}`' for field in FIELDS]
-        rows = _query(config, password, f'SELECT {",".join(expressions)} FROM {table} WHERE Removed = 0 ORDER BY RoleID LIMIT 100001;')
+        rows = execute(f'SELECT {",".join(expressions)} FROM {table} WHERE Removed = 0 ORDER BY RoleID LIMIT 100001;')
         for line in rows.splitlines():
             values = line.split('\t')
             if len(values) != len(FIELDS):

@@ -2,8 +2,8 @@ const $ = id => document.getElementById(id);
 
 /** Read-only, paginated NPC browser. Owns request tickets and never changes item forms or drafts. */
 export class CreatureBrowser {
-  constructor({api, node, getViewer, status, openItem}) {
-    Object.assign(this, {api, node, getViewer, status, openItem});
+  constructor({api, node, getViewer, status, openItem, beforeSelect = () => true, onSelected = () => {}}) {
+    Object.assign(this, {api, node, getViewer, status, openItem, beforeSelect, onSelected});
     this.active = false;
     this.page = 0;
     this.listTicket = this.detailTicket = this.modelTicket = 0;
@@ -194,6 +194,10 @@ export class CreatureBrowser {
 
   /** Show one template's maps and generated item probabilities; keep game strings in text nodes. */
   async select(id) {
+    const generation = this.detailTicket;
+    const choice = this.beforeSelect(id);
+    const allowed = choice && typeof choice.then === 'function' ? await choice : choice;
+    if (!allowed || generation !== this.detailTicket || !this.active) return;
     const ticket = ++this.detailTicket;
     this.clearDetail();
     this.syncLocation();
@@ -203,12 +207,15 @@ export class CreatureBrowser {
       const detail = await this.api(`/api/creatures/${id}?${query}`);
       if (!this.active || ticket !== this.detailTicket) return;
       this.selected = detail;
+      const notified = this.onSelected(id);
+      if (notified && typeof notified.then === 'function') await notified;
+      if (!this.active || ticket !== this.detailTicket) return;
       for (const button of $('creature-items').querySelectorAll('button')) {
         const active = Number(button.dataset.creatureId) === id;
         button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
       }
       $('preview-title').textContent = detail.name;
-      $('id-tag').textContent = `模板 ${id} · 只读`;
+      $('id-tag').textContent = `原始模板 ${id}`;
       $('slot-label').textContent = `共 ${detail.maps.length} 张地图`;
       $('creature-description').textContent = detail.description || '暂无模板说明。';
       $('creature-maps').replaceChildren(...detail.maps.map(map => {
@@ -263,7 +270,7 @@ export class CreatureBrowser {
         td.colSpan = 2; tr.append(td); $('creature-drops').append(tr);
       }
       this.syncLocation(id);
-      this.status(`已打开 ${detail.name} · NPC与怪物只读查看`);
+      this.status(`已打开 ${detail.name} · 可编辑模板或新增地图变体`);
       await this.showModel();
     } catch (error) {
       if (!this.active || ticket !== this.detailTicket) return;

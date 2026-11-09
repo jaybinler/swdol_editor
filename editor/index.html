@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>轩辕剑 · 道具工坊</title><link rel="stylesheet" href="/style.css">
-  <script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/controls/OrbitControls.js":"/vendor/OrbitControls.js"}}</script>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/controls/OrbitControls.js":"/vendor/OrbitControls.js","three/addons/controls/TransformControls.js":"/vendor/TransformControls.js"}}</script>
 </head>
 <body>
   <a href="#properties" class="skip">跳到道具属性</a>
   <header>
     <div class="brand"><span class="brand-mark" aria-hidden="true">轩</span><div><h1>道具工坊</h1><p>轩辕剑网络版 / 本地内容编辑器</p></div></div>
-    <div class="header-actions"><span class="tag">本地工作区</span><button id="open-settings" aria-expanded="false" aria-controls="settings-panel">设置</button><button id="export" class="primary" disabled>导出并覆盖双端文件</button></div>
+    <div class="header-actions"><span class="tag">本地工作区</span><button id="open-settings" aria-expanded="false" aria-controls="settings-panel">设置</button><button id="recover-publication" hidden>恢复上次发布</button><button id="export" class="primary" disabled>导出并覆盖双端文件</button></div>
   </header>
-  <nav class="library-switch" aria-label="内容类型"><button id="library-items" aria-pressed="true">道具</button><button id="library-creatures" aria-pressed="false">NPC与怪物</button><span id="creature-availability-note" class="muted">NPC与怪物仅供查看</span></nav>
+  <nav class="library-switch" aria-label="内容类型"><button id="library-items" aria-pressed="true">道具</button><button id="library-creatures" aria-pressed="false">NPC与怪物</button><span id="creature-availability-note" class="muted">怪物支持独立草稿与配套补丁</span></nav>
   <div id="status" role="status" aria-live="polite">正在读取道具与本地基线…</div>
   <section id="settings-panel" class="settings-panel" aria-labelledby="settings-title" hidden>
     <div class="settings-heading"><div><h2 id="settings-title" tabindex="-1">数据源设置</h2><p class="muted">配置读取基线与覆盖目标，校验通过后保存。点击“导出并覆盖双端文件”将先备份，再替换目标文件。</p></div><button id="settings-close">返回工坊</button></div>
@@ -138,8 +138,64 @@
       <p class="footnote">属性值已按原客户端读取方式解析。单位和游戏平衡效果仍需在游戏内验证。</p>
     </section>
     <section class="properties" id="creature-properties" aria-labelledby="creature-properties-title" hidden>
-      <div class="section-title"><h2 id="creature-properties-title">NPC与怪物详情</h2><span class="tag">只读</span></div>
+      <div class="section-title"><h2 id="creature-properties-title">NPC与怪物详情</h2><span class="tag">模板与生成点</span></div>
       <p id="creature-description" class="muted"></p>
+      <section id="creature-authoring" class="creature-authoring" aria-label="怪物新增与编辑">
+        <div class="item-actions"><button id="npc-edit" disabled>编辑怪物</button><button id="npc-clone" disabled>新增地图变体</button></div>
+        <p id="npc-mode-note" class="property-note" role="status">选择模板后可编辑，或使用新编号新增地图变体。</p>
+        <p id="npc-error" class="error" role="alert"></p>
+        <form id="npc-form"><fieldset id="npc-fields" disabled>
+          <h3 id="npc-form-title">怪物配置</h3>
+          <div class="npc-field-grid">
+            <label>模板 ID<input id="npc-target" type="number" min="1" max="32767" required readonly></label>
+            <label>名称（GBK 最多 12 字节）<input id="npc-name" required></label>
+            <label>等级<input id="npc-level" type="number" min="1" max="100" required></label>
+            <label>性别<select id="npc-sex"><option value="0">女／母</option><option value="1">男／公</option></select></label>
+          </div>
+          <label>说明<textarea id="npc-description" rows="2"></textarea></label>
+          <details class="property-group"><summary>基础属性</summary><div id="npc-attributes" class="npc-field-grid"></div></details>
+          <details class="property-group" open><summary>外观</summary>
+            <label>外观来源编号<input id="npc-appearance" type="number" list="npc-appearance-options" min="1" max="32767" required></label>
+            <datalist id="npc-appearance-options"></datalist>
+            <div class="npc-field-grid npc-scale"><label>宽度比例<input id="npc-scale-x" type="number" min="0.25" max="4" step="0.01" required></label><label>高度比例<input id="npc-scale-y" type="number" min="0.25" max="4" step="0.01" required></label><label>厚度比例<input id="npc-scale-z" type="number" min="0.25" max="4" step="0.01" required></label></div>
+            <button id="npc-preview" type="button">预览当前外观</button>
+            <button id="npc-model-edit" type="button">修改模型与贴图</button><button id="npc-model-reset" type="button" hidden>恢复当前怪物外观</button>
+            <p id="npc-model-state" class="property-note"></p>
+            <p class="property-note">未绑定模型草稿且比例为 1 时复用原资源；模型或比例修改将创建独立外观，保留原动作引用。游戏效果待验收。</p>
+          </details>
+          <details class="property-group" open><summary>刷新规则</summary>
+            <label>基础间隔（秒）<input id="npc-respawn" type="number" min="0.7" max="1800000" step="0.1" required></label>
+            <p id="npc-timing" class="property-note" aria-live="polite"></p>
+            <p class="property-note">不同地图需要不同间隔时，请新增可见的地图变体。以下候选若切到其他模板，下一次间隔按实际模板计算。</p>
+            <div id="npc-candidates" class="npc-field-grid"></div>
+          </details>
+          <details class="property-group"><summary>掉落道具（12 槽）</summary>
+            <p class="property-note">输入物品编号与掉率；编号为 0 或 -1 表示空槽。修改后最多 8 个有效候选。掉率显示原生实际值。</p>
+            <datalist id="npc-item-options"></datalist><div id="npc-drop-fields" class="npc-slot-fields"></div>
+          </details>
+          <details class="property-group"><summary>可释放技能（16 槽）</summary>
+            <p class="property-note">0 或 -1 为空槽；保留重复槽位，不将重复次数直接解释为施放概率。</p>
+            <p class="property-note">此处编辑模板技能；原生 AI、自动脚本可能另行施放技能。施放概率和冷却控制尚未开放。</p>
+            <datalist id="npc-skill-options"></datalist><div id="npc-skill-fields" class="npc-field-grid"></div>
+          </details>
+          <details class="property-group" open><summary>地图生成点</summary>
+            <p class="property-note">新增点复制所选普通 NPC 的存档配置；请核对原脚本和初次生成状态。数量按独立存档对象展开。</p>
+            <label>地图<select id="npc-point-map"></select></label>
+            <label>存档来源<select id="npc-point-seed"></select></label>
+            <p id="npc-point-source" class="property-note"></p>
+            <div class="npc-field-grid"><label>操作<select id="npc-point-action"><option value="add">新增点</option><option value="update">移动已有点</option><option value="remove">移除已有点</option></select></label><label>数量<input id="npc-point-count" type="number" min="1" max="50" value="1"></label></div>
+            <div class="npc-field-grid"><label>X<input id="npc-point-x" type="number" step="any"></label><label>Y<input id="npc-point-y" type="number" step="any"></label><label>Z<input id="npc-point-z" type="number" step="any"></label><label>朝向（度）<input id="npc-point-dir" type="number" min="0" max="359.999" step="any" value="0"></label></div>
+            <p id="npc-point-pending" class="property-note" role="status" hidden>这些点位输入尚未加入修改列表。</p>
+            <button id="npc-add-point" type="button">加入点位修改</button><button id="npc-reset-point" type="button" hidden>放弃本次点位输入</button><div id="npc-point-changes"></div>
+          </details>
+          <div class="form-actions"><button type="submit" class="primary" id="npc-stage">暂存怪物</button><button type="button" id="npc-restore">恢复表单</button><button type="button" id="npc-view">返回查看</button></div>
+        </fieldset></form>
+        <section class="property-group"><div class="section-title"><h3>怪物草稿</h3><span id="npc-draft-count">0 项</span></div><div id="npc-draft-list"></div>
+          <p class="property-note">导出后自动覆盖设置中的双端文件，并写入地图点位。整个程序仅保留最近一次备份和补丁包。</p>
+          <button id="npc-export" type="button" disabled>导出并覆盖双端</button><button id="npc-reload" type="button">重新读取草稿</button>
+          <p id="npc-export-result" class="property-note" role="status"></p>
+        </section>
+      </section>
       <section class="property-group"><h3>出现地图</h3><div id="creature-maps" class="map-memberships"></div></section>
       <details class="property-group" id="creature-reset-panel"><summary>刷新候选（5 槽）</summary>
         <p id="creature-reset-note" class="property-note"></p>
@@ -151,6 +207,12 @@
   <dialog id="discard-dialog" aria-labelledby="discard-title" aria-describedby="discard-message">
     <form method="dialog"><h2 id="discard-title">有未暂存的内容</h2><p id="discard-message"></p>
       <div class="dialog-actions"><button value="keep" autofocus>保留输入</button><button value="discard" class="primary">放弃并继续</button></div>
+    </form>
+  </dialog>
+  <dialog id="publication-dialog" aria-labelledby="publication-title" aria-describedby="publication-summary">
+    <form method="dialog"><h2 id="publication-title">确认怪物发布</h2><p id="publication-summary"></p>
+      <label class="publication-confirm"><input id="publication-stopped" type="checkbox" required>相关游戏服务和客户端已停止</label>
+      <div class="dialog-actions"><button type="button" id="publication-cancel">取消</button><button value="publish" class="primary">确认并继续</button></div>
     </form>
   </dialog>
   <script type="module" src="/app.js"></script>

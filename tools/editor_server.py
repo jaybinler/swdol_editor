@@ -63,6 +63,9 @@ class EditorState:
             namespace = hashlib.sha256(identity.encode('utf-8')).hexdigest()
             self.draft_path = output_path(self.root, Path('output/editor/workspaces') / namespace / 'draft.json')
         self.edits, self.revision = [], 0
+        self.creature_edits = None
+        self.creature_revision = 0
+        self.creature_draft_path = self.draft_path.with_name('creatures.json')
         read_draft = self.draft_path
         if (not read_draft.exists() and config is not None and legacy.exists()
                 and paths.server.resolve() == (self.root / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf').resolve()
@@ -111,6 +114,10 @@ class EditorState:
         if set(value) != {'revision', 'edits'} or type(value['revision']) is not int or value['revision'] != self.revision:
             raise ContentError("草稿已在其他页面修改，请刷新后再操作。")
         edits = validate_edits(self.loaded, value['edits'])
+        self.load_creature_draft()
+        reserved = {e['target_id'] for e in self.creature_edits}
+        if any(e['target_id'] in reserved for e in edits):
+            raise ContentError('编号与怪物草稿冲突，请修改目标编号。')
         from xyj_content.acquisition import has_acquisition
         if has_acquisition(edits):
             self.acquisition().validate(edits)
@@ -118,6 +125,37 @@ class EditorState:
         write_json(self.draft_path, {'format': 'xyj-editor-draft/v1', 'sources': self.hashes,
                                     'revision': revision, 'edits': edits})
         self.edits, self.revision = edits, revision
+        return {'revision': revision, 'edits': edits}
+
+    def load_creature_draft(self):
+        """Load an independently versioned NPC draft only when the authoring feature needs it."""
+        from xyj_content.creature_editor import FORMAT, validate
+        if self.creature_edits is not None:
+            return
+        edits, revision = [], 0
+        if self.creature_draft_path.exists():
+            data = read_json(self.creature_draft_path)
+            if data.get('format') != FORMAT or data.get('sources') != self.hashes:
+                raise ContentError('怪物草稿基线不匹配，请核对原工作区。')
+            revision = data.get('revision')
+            if type(revision) is not int or revision < 0:
+                raise ContentError('怪物草稿版本无效。')
+            edits = validate(self.loaded, data.get('edits'), self.creatures())
+        self.creature_edits, self.creature_revision = edits, revision
+
+    def save_creatures(self, value):
+        """Atomically replace NPC operations; item drafts and their revisions remain independent."""
+        from xyj_content.creature_editor import FORMAT, validate
+        self.load_creature_draft()
+        if (set(value) != {'revision', 'edits'} or type(value['revision']) is not int or
+                value['revision'] != self.creature_revision):
+            raise ContentError('怪物草稿已在其他页面修改，请重新读取草稿。')
+        if not self.creatures().reset_coverage['available']:
+            raise ContentError('怪物编辑需要已核验原生版本的 v3 NPC 快照。')
+        edits = validate(self.loaded, value['edits'], self.creatures(), {e['target_id'] for e in self.edits})
+        revision = self.creature_revision + 1
+        write_json(self.creature_draft_path, {'format': FORMAT, 'sources': self.hashes, 'revision': revision, 'edits': edits})
+        self.creature_edits, self.creature_revision = edits, revision
         return {'revision': revision, 'edits': edits}
 
     def acquisition(self):
@@ -169,8 +207,13 @@ def make_handler(context):
                 path = urlsplit(self.path).path
                 if path in ('/api/settings', '/api/settings/export') and isinstance(context, SettingsController):
                     self.json(context.export() if path.endswith('/export') else context.public())
+                elif path == '/api/publication-result' and isinstance(context, SettingsController):
+                    from xyj_content.publication import request_result
+                    self.json(request_result(context.root,parse_qs(urlsplit(self.path).query).get('request_id',[''])[0]))
                 elif path == '/api/bootstrap' and state is None:
+                    from xyj_content.creature_auto import recovery_pending
                     self.json({'token': context.token, 'ready': False, 'setup_error': context.setup_error,
+                               'publication_recovery_pending': recovery_pending(context.root),
                                'workspace_generation': generation})
                 elif path.startswith('/api/') and state is None:
                     raise ContentError('尚未配置有效数据源，请打开设置并校验。')
@@ -183,10 +226,79 @@ def make_handler(context):
                                    'workspace_generation': generation})
                 elif path == '/api/item-ids':
                     with state.lock:
-                        self.json({**item_id_availability(state.loaded, state.edits),
+                        state.load_creature_draft()
+                        self.json({**item_id_availability(state.loaded, state.edits + state.creature_edits),
                                    'revision': state.revision, 'workspace_generation': generation})
                 elif path == '/api/creatures/catalog':
                     self.json(state.creatures().metadata())
+                elif path == '/api/creature-editor':
+                    from xyj_content.creature_editor import ATTRIBUTES
+                    from xyj_content.creatures import generation_chance
+                    with state.lock:
+                        state.load_creature_draft()
+                        catalog = state.creatures()
+                        self.json({'revision': state.creature_revision, 'edits': state.creature_edits,
+                            'availability': item_id_availability(state.loaded, state.edits + state.creature_edits),
+                            'maps': [{'id': k, 'name': v} for k, v in catalog.zones.items()],
+                            'appearances': [{'id': k, 'name': catalog.definitions[k].name} for k in catalog.records],
+                            'items': [{'id': k, 'name': v.name} for k,v in catalog.definitions.items() if v.type_code in (1,2,4,5,8)],
+                            'skills': [{'id': k, 'name': v.name} for k,v in catalog.definitions.items() if v.type_code == 3],
+                            'attributes': [{'key': k, 'name': v[0]} for k,v in ATTRIBUTES.items()],
+                            'probabilities': [{'threshold': t, 'percent': generation_chance(t)} for t in range(-1,100)],
+                            'native_verified': catalog.reset_coverage['available'],
+                            'export_mode': 'automatic' if isinstance(context, SettingsController) else 'offline'})
+                elif path == '/api/model-edit/open':
+                    from xyj_content.model_workspace import open_document
+                    query=parse_qs(urlsplit(self.path).query)
+                    with state.lock:
+                        self.json(open_document(state,int(query.get('template_id',['0'])[0]),query.get('reference',[None])[0],fresh=query.get('fresh',['0'])[0]=='1'))
+                elif path == '/api/model-edit/blob-status':
+                    from xyj_content.model_workspace import blob_path
+                    query=parse_qs(urlsplit(self.path).query);key=query.get('id',[''])[0]
+                    dest=blob_path(state.root,key);part=dest.with_suffix('.part')
+                    self.json({'id':key,'bytes':dest.stat().st_size if dest.exists() else part.stat().st_size if part.exists() else 0,'complete':dest.exists()})
+                elif path == '/api/model-edit/texture':
+                    from xyj_content.model_workspace import blob_path,image_pixels,bundle_path,load_bundle,bundle_image
+                    from xyj_content import native_texture
+                    query=parse_qs(urlsplit(self.path).query)
+                    tint=[float(x) for x in query.get('tint',['1,1,1'])[0].split(',')]
+                    folder=None
+                    if 'reference' in query:
+                        folder=bundle_path(state.root,query['reference'][0]);bundle=load_bundle(folder,query['reference'][0])
+                    if 'image' in query:
+                        key=query['image'][0]
+                        image = (bundle_image(folder, bundle['images'], key)
+                                 if folder is not None and key in bundle['images'] else blob_path(state.root, key))
+                        width,height,pixels=image_pixels(image)
+                    else:
+                        texture=int(query.get('texture',['-1'])[0])
+                        if not 0<=texture<=99999:raise ContentError('贴图编号无效。')
+                        relative=f'TEX/ALL{texture:05d}.TEX'
+                        source=folder/'sources'/relative if folder is not None and relative in bundle['sources'] else state.client/'TEX'/f'ALL{texture:05d}.TEX'
+                        width,height,pixels=native_texture.rgba(read_bytes(source))
+                    self.send_data(native_texture.png(native_texture.encode(width,height,pixels,tint)),'image/png')
+                elif path == '/api/creature-seeds':
+                    query = parse_qs(urlsplit(self.path).query)
+                    map_id = int(query.get('map', ['0'])[0])
+                    source_id = int(query.get('source', ['0'])[0])
+                    catalog = state.creatures()
+                    direct = [r for r in catalog.roles.values() if r['map_id'] == r['revive_map_id']]
+                    own = [r for r in direct if r['template_id'] == source_id]
+                    rows = own + [r for r in direct if r['map_id'] == map_id and r['template_id'] != source_id]
+                    if not rows:
+                        rows = direct
+                    self.json({'points': [{'key': r['key'], 'template_id': r['template_id'],
+                                          'name': catalog.definitions[r['template_id']].name,
+                                          'position': r['revive_position'], 'map_id': r['map_id'],
+                                          'plots': r.get('plots')} for r in rows[:200]], 'total': len(rows)})
+                elif path.startswith('/api/creature-edit/'):
+                    from xyj_content.creature_editor import detail
+                    template=int(path.rsplit('/',1)[1]);data=detail(state.loaded,template,state.creatures())
+                    if isinstance(context,SettingsController):
+                        from xyj_content.model_workspace import project_for
+                        project=project_for(state,context.document,template)
+                        if project:data['model_project']=project
+                    self.json(data)
                 elif path == '/api/acquisition/catalog':
                     self.json({**state.acquisition().public(), 'workspace_generation': generation})
                 elif path == '/api/creatures':
@@ -248,6 +360,9 @@ def make_handler(context):
                 else:
                     allowed = {'/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js',
                                '/creatures.js': 'creatures.js',
+                               '/creature-editor.js': 'creature-editor.js',
+                               '/model-editor.js':'model-editor.js', '/model-operations.js':'model-operations.js',
+                               '/model-viewport.js':'model-viewport.js',
                                '/settings.js': 'settings.js',
                                '/item-workflow.js': 'item-workflow.js',
                                '/item-drops.js': 'item-drops.js',
@@ -256,6 +371,7 @@ def make_handler(context):
                                '/vendor/three.module.js': 'node_modules/three/build/three.module.js',
                                '/vendor/three.core.js': 'node_modules/three/build/three.core.js',
                                '/vendor/OrbitControls.js': 'node_modules/three/examples/jsm/controls/OrbitControls.js'}
+                    allowed['/vendor/TransformControls.js']='node_modules/three/examples/jsm/controls/TransformControls.js'
                     if path not in allowed:
                         self.json({'error': '路径不存在。'}, 404)
                         return
@@ -306,6 +422,13 @@ def make_handler(context):
                     else:
                         self.json({'error': '设置接口不存在。'}, 404)
                     return
+                if self.path == '/api/recover-publication' and isinstance(context, SettingsController):
+                    if set(value) != {'server_stopped'} or value['server_stopped'] is not True:
+                        raise ContentError('恢复前请确认相关游戏服务和客户端已停止。')
+                    from xyj_content.creature_auto import recover_workspace
+                    with context.lock:
+                        self.json(recover_workspace(context,server_stopped=True))
+                    return
                 with context.lock:
                     state = context.workspace if isinstance(context, SettingsController) else context
                     if state is None:
@@ -319,6 +442,13 @@ def make_handler(context):
                         with state.lock:
                             self.json(apply_workspace(context, value['revision']))
                         return
+                    if self.path == '/api/creature-export' and isinstance(context, SettingsController):
+                        if not {'revision','server_stopped'}.issubset(value) or set(value)-{'revision','server_stopped','request_id'}:
+                            raise ContentError('怪物自动发布请求格式无效。')
+                        from xyj_content.creature_auto import apply_workspace
+                        with state.lock:
+                            self.json(apply_workspace(context,value['revision'],server_stopped=value['server_stopped'],request_id=value.get('request_id')))
+                        return
                     self._write_workspace(state, value)
             except (ContentError, ValueError, UnicodeError, OSError) as exc:
                 self.json({'error': str(exc)}, 400)
@@ -329,7 +459,37 @@ def make_handler(context):
 
         def _write_workspace(self, state, value):
             with state.lock:
-                if self.path == '/api/draft':
+                if self.path == '/api/model-edit/upload':
+                    from xyj_content.model_workspace import upload
+                    self.json(upload(state,value))
+                elif self.path == '/api/model-edit/save':
+                    from xyj_content.model_workspace import save_document
+                    self.json(save_document(state,value))
+                elif self.path == '/api/creature-draft':
+                    self.json(state.save_creatures(value))
+                elif self.path == '/api/creature-preview':
+                    import math
+                    if set(value)-{'model_ref'} != {'appearance_id', 'scale'} or type(value['appearance_id']) is not int:
+                        raise ContentError('怪物预览参数无效。')
+                    scale = value['scale']
+                    if not isinstance(scale, list) or len(scale) != 3 or any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not .25 <= v <= 4 for v in scale):
+                        raise ContentError('三轴比例须为 0.25 至 4。')
+                    if value.get('model_ref'):
+                        from xyj_content.model_workspace import preview_model
+                        model=preview_model(state,value['model_ref'],value['appearance_id'])
+                    else:model = state.creatures().model(value['appearance_id'])
+                    model['action']['scale'] = [a*b for a,b in zip(model['action'].get('scale',[1,1,1]),scale)]
+                    self.json(model)
+                elif self.path == '/api/creature-export':
+                    from xyj_content.creature_editor import export_patch
+                    state.load_creature_draft()
+                    if set(value) != {'revision'} or type(value['revision']) is not int or value['revision'] != state.creature_revision:
+                        raise ContentError('怪物导出版本已过期，请重新读取草稿。')
+                    if state.edits:
+                        raise ContentError('请先完成道具草稿的发布或移除，防止两类补丁覆盖同一基线。')
+                    self.json(export_patch(state.root, state.loaded, state.creature_edits, catalog=state.creatures(),
+                                          npc_directory=state.npc_directory, client=state.client))
+                elif self.path == '/api/draft':
                     self.json(state.save(value))
                 elif self.path == '/api/export':
                     if set(value) != {'revision'} or type(value['revision']) is not int or value['revision'] != state.revision:

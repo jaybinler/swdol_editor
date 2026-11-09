@@ -5,12 +5,29 @@ const state = {items: [], fields: [], edits: [], revision: 0, details: new Map()
   draftTarget: null, dirty: false, busy: false, loading: false, mode: 'view', formBaseline: null,
   choosingTemplate: false, baselineIds: new Set(), idsLoaded: false, ready: false,
   page: 0, ticket: 0, previewTicket: 0, previewMode: 'equipped', library: 'items'};
-let viewer, creatures, settingsPanel, itemDropSources, acquisitionForm;
+let viewer, creatures, creatureEditor, settingsPanel, itemDropSources, acquisitionForm;
 let acquisitionSummary = () => [];
+
+/** Confirm the existing stopped-server prerequisite once inside the publication action. */
+async function confirmPublication(edits = [], recovery = false) {
+  const dialog = $('publication-dialog');
+  $('publication-title').textContent = recovery ? '恢复上次发布' : '确认怪物发布';
+  $('publication-summary').textContent = recovery ? '恢复未完成的文件和数据库修改。已发布后又被其他程序修改的内容会保留并提示处理。' :
+    `将发布 ${edits.length} 个怪物、${edits.reduce((n,e) => n+e.spawns.length,0)} 项地图点位修改，自动覆盖设置中的目标。成功后只保留最近一次备份和补丁。`;
+  $('publication-stopped').checked = false;
+  dialog.returnValue = 'cancel';
+  $('publication-cancel').onclick = () => dialog.close('cancel');
+  return new Promise(resolve => {
+    dialog.addEventListener('close',() => resolve(dialog.returnValue === 'publish' && $('publication-stopped').checked),{once:true});
+    dialog.showModal();
+    $('publication-cancel').focus();
+  });
+}
 
 /** Change only the visible library; preserve the item form and its unsaved values in place. */
 async function switchLibrary(library, templateId = null) {
-  if (state.busy || state.loading || !creatures) return;
+  if (state.busy || state.loading || creatureEditor?.busy || !creatures) return;
+  if (creatureEditor) creatureEditor.previewTicket++;
   if (state.library === library) {
     if (library === 'creatures' && templateId !== null) await creatures.openTemplate(templateId);
     return;
@@ -18,6 +35,7 @@ async function switchLibrary(library, templateId = null) {
   state.library = library;
   state.ticket++; state.previewTicket++;
   const npc = library === 'creatures';
+  $('export').hidden = npc;
   $('workspace-main').classList.toggle('creatures-layout', npc);
   $('item-library').hidden = $('properties').hidden = npc;
   $('creature-library').hidden = $('creature-properties').hidden = !npc;
@@ -514,8 +532,9 @@ async function removeDraft(target) {
 }
 
 async function exportPatch() {
-  if (state.busy || state.loading) return;
+  if (state.busy || state.loading || creatureEditor?.busy) return;
   if (state.exportMode !== 'automatic') { status('请重启编辑器服务，启用自动备份与覆盖。', true); return; }
+  if (creatureEditor?.dirty) { status('怪物表单尚未暂存，请返回 NPC 与怪物页签处理后再发布道具。', true); return; }
   if (state.dirty) { status('表单尚未暂存，请先暂存修改后再导出。', true); $('stage').focus(); return; }
   setBusy(true); status('正在校验补丁、备份并覆盖双端文件及所选获取脚本…');
   try {
@@ -538,10 +557,11 @@ async function start() {
     const data = await api('/api/bootstrap');
     state.token = data.token;
     state.workspaceGeneration = data.workspace_generation;
+    $('recover-publication').hidden = !data.publication_recovery_pending;
     try {
       const {SettingsPanel} = await import('./settings.js');
       settingsPanel = new SettingsPanel({api, node,
-        beforeApply: () => !state.dirty || confirm('道具表单有未暂存的修改。保存设置将重新载入页面，是否放弃这些表单修改？'),
+        beforeApply: () => !(state.dirty || creatureEditor?.dirty) || confirm('有未暂存的表单修改。保存设置将重新载入页面，是否放弃这些表单修改？'),
         applied: () => { state.dirty = false; location.reload(); }});
     } catch {
       $('open-settings').disabled = true;
@@ -593,7 +613,12 @@ async function start() {
     if (!viewer) for (const control of document.querySelectorAll('.view-controls button, .view-controls input')) control.disabled = true;
     try {
       const {CreatureBrowser} = await import('./creatures.js');
+      const {CreatureEditor} = await import('./creature-editor.js');
+      creatureEditor = new CreatureEditor({api, node, status, confirmDiscard, confirmPublish: confirmPublication,
+        canPublish: () => !state.dirty, getViewer: () => viewer,
+        applied: target => { location.assign(`/?library=creatures&map=all&npc=${target}`); }});
       creatures = new CreatureBrowser({api, node, getViewer: () => viewer, status,
+        beforeSelect: id => creatureEditor.canSelect(id), onSelected: id => creatureEditor.select(id),
         openItem: async id => { await switchLibrary('items'); await select(id); }});
     } catch {
       // A pre-upgrade running handler may serve current HTML but lack the new module allowlist.
@@ -614,6 +639,8 @@ async function start() {
     try {
       const applied = sessionStorage.getItem('last-apply-result');
       if (applied) { $('export-result').textContent = applied; status(applied); sessionStorage.removeItem('last-apply-result'); }
+      const creatureApplied = sessionStorage.getItem('last-creature-apply-result');
+      if (creatureApplied) { $('npc-export-result').textContent = creatureApplied; status(creatureApplied); sessionStorage.removeItem('last-creature-apply-result'); }
     } catch { /* The export remains committed if browser storage is unavailable. */ }
     if (creatures && params.get('library') === 'creatures') {
       $('creature-search').value = params.get('npc') || params.get('q') || '';
@@ -624,6 +651,12 @@ async function start() {
 }
 
 $('form').addEventListener('submit', stage);
+$('recover-publication').addEventListener('click',async () => {
+  if (!await confirmPublication([],true)) return;
+  $('recover-publication').disabled = true;
+  try { await api('/api/recover-publication',{server_stopped:true}); location.reload(); }
+  catch (error) { status(error.message,true); $('recover-publication').disabled = false; }
+});
 $('library-items').addEventListener('click', () => switchLibrary('items'));
 $('library-creatures').addEventListener('click', () => switchLibrary('creatures'));
 $('form').addEventListener('input', () => {
@@ -652,6 +685,6 @@ $('rotate-right').addEventListener('click', () => viewer?.rotate(Math.PI / 8));
 $('zoom-in').addEventListener('click', () => viewer?.zoom(.8));
 $('zoom-out').addEventListener('click', () => viewer?.zoom(1.25));
 $('wireframe').addEventListener('change', () => viewer?.wireframe($('wireframe').checked));
-window.addEventListener('beforeunload', event => { if (state.dirty) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (state.dirty || creatureEditor?.dirty || creatureEditor?.modelEditor?.dirty) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('pagehide', () => viewer?.dispose());
 start();

@@ -13,6 +13,9 @@ from xyj_content.patch import PAYLOAD_PATHS
 from xyj_content.settings import SettingsController, default_config
 
 
+from xyj_content.verification_inputs import paired_fixture
+
+
 def main():
     """Copy paired fixtures and web assets, then expose the real editor against disposable targets."""
     parser = ArgumentParser(description=__doc__)
@@ -23,7 +26,7 @@ def main():
     output = output_path(project, args.out)
     output.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix='browser-', dir=output)).resolve()
-    baseline = project/'output/editor/patches/20261104-165921-7d73b3ee/baseline'
+    baseline = paired_fixture(project) / 'baseline'
     for relative in PAYLOAD_PATHS.values():
         target = root/relative; target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(baseline/relative, target)
