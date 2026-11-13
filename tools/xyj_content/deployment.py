@@ -367,7 +367,8 @@ def apply_workspace(controller, revision: int) -> dict:
         with tempfile.TemporaryDirectory(dir=pending, prefix='apply-',ignore_cleanup_errors=True) as temporary:
             from .acquisition import has_acquisition, NATIVE_SHA256
             acquisition = state.acquisition() if has_acquisition(state.edits) else None
-            exported = export_editor_patch(Path(temporary), state.loaded, state.edits, acquisition=acquisition)
+            exported = export_editor_patch(Path(temporary), state.loaded, state.edits, acquisition=acquisition,
+                                           effects_client=targets['client_object'].parent.parent)
             package = Path(exported['path'])
             publication = prepare_publication(root,package)
             blobs = {key: read_bytes(package / relative) for key, relative in PAYLOAD_PATHS.items()}

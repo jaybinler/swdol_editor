@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import argparse
+import shutil
 import subprocess
 import sys
 import venv
@@ -38,10 +39,13 @@ def main() -> int:
                            check=True, timeout=180)
             if not ready(python):
                 raise RuntimeError('运行依赖未通过检查，请检查 Python 安装和网络后重试。')
-        required = ('editor/node_modules/three/build/three.module.js', 'editor/node_modules/three/build/three.core.js',
-                    'editor/node_modules/three/examples/jsm/controls/OrbitControls.js')
-        if not all((ROOT / name).is_file() for name in required):
-            raise RuntimeError('缺少 Three.js。请使用完整迁移包，或在 editor 目录执行 npm ci。')
+        editor = ROOT / 'editor'
+        if not (editor / 'dist/index.html').is_file():
+            node = shutil.which('node')
+            vite = editor / 'node_modules/vite/bin/vite.js'
+            if not node or not vite.is_file():
+                raise RuntimeError('缺少前端构建。请使用完整迁移包，或在 editor 目录执行 npm ci 和 npm run build。')
+            subprocess.run([node, str(vite), 'build'], cwd=editor, check=True, timeout=120)
         print('运行环境通过：' + str(python), flush=True)
         if args.check_env:
             return 0

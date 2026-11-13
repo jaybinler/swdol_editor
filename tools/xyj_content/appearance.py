@@ -63,7 +63,7 @@ def _body_texture(model: dict, action: dict) -> None:
     body['texture_url'] = f"/api/sprite/{action['frame']}/{action.get('pose', 0)}.png"
 
 
-def _attach(model: dict, equipment: dict, slot: int) -> None:
+def _attach(model: dict, equipment: dict, slot: int, *, particle_anchors=None) -> None:
     anchor = model['anchors'].get(str(slot + 1))
     if anchor is None:
         raise ContentError("人物模型缺少对应的装备挂点。")
@@ -73,12 +73,17 @@ def _attach(model: dict, equipment: dict, slot: int) -> None:
         for c in range(3):
             matrix[r*4+c] = -matrix[r*4+c]
     scale = equipment['action']['scale']
+    def transform(point):
+        xyz = [point[c] * scale[c] for c in range(3)]
+        return [sum(matrix[r*4+c]*xyz[c] for c in range(3)) + matrix[r*4+3] for r in range(3)]
+
     for mesh in equipment['meshes']:
         positions = []
         for i in range(0, len(mesh['positions']), 3):
-            xyz = [mesh['positions'][i+c] * scale[c] for c in range(3)]
-            positions.extend(sum(matrix[r*4+c]*xyz[c] for c in range(3)) + matrix[r*4+3] for r in range(3))
+            positions.extend(transform(mesh['positions'][i:i+3]))
         model['meshes'].append({**mesh, 'positions': positions, 'part': 'equipment'})
+    if particle_anchors:
+        model['particle_anchors'] = [transform(point) for point in particle_anchors]
 
 
 def equipped_model(client: Path, table, record: bytes, profile: str = 'auto') -> dict:
@@ -118,8 +123,10 @@ def equipped_model(client: Path, table, record: bytes, profile: str = 'auto') ->
         if restriction_warning:
             warnings.append(restriction_warning)
     else:
+        from .particles import weapon_anchors
         equipment = item_model(client, record)
-        _attach(model, equipment, HEAD_SLOT if mask & 1 else MAINHAND_SLOT if mask & 4 else OFFHAND_SLOT)
+        slot = HEAD_SLOT if mask & 1 else MAINHAND_SLOT if mask & 4 else OFFHAND_SLOT
+        _attach(model, equipment, slot, particle_anchors=weapon_anchors(equipment) if slot != HEAD_SLOT else None)
         warnings.extend(equipment['warnings'])
     model.update(action=action, profile=profile, profile_label=definition['label'],
                  allowed_profiles=allowed, warnings=list(dict.fromkeys(warnings)), mode='equipped',

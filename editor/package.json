@@ -1,12 +1,28 @@
 {
   "name": "xyj-local-editor",
   "private": true,
-  "version": "0.14.0",
+  "version": "0.16.0",
   "type": "module",
   "scripts": {
-    "test": "node --test ../tests/item-workflow.test.mjs ../tests/item-drops.test.mjs ../tests/acquisition.test.mjs ../tests/creature-editor.test.mjs ../tests/model-operations.test.mjs"
+    "test": "node --test ../tests/item-workflow.test.mjs ../tests/item-drops.test.mjs ../tests/acquisition.test.mjs ../tests/creature-editor.test.mjs ../tests/model-operations.test.mjs",
+    "build": "vite build"
   },
   "dependencies": {
-    "three": "0.180.0"
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.70.0",
+    "motion": "^14.10.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-resizable-panels": "^4.21.0",
+    "tailwind-merge": "^3.7.0",
+    "three": "0.180.0",
+    "zustand": "^5.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@vitejs/plugin-react": "^6.2.1",
+    "tailwindcss": "^4.3.5",
+    "vite": "^8.3.6"
   }
 }

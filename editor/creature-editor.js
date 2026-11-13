@@ -18,8 +18,9 @@ export function nearestProbability(value, probabilities) {
 
 /** Own NPC forms and drafts separately from item state; every game string is rendered as text. */
 export class CreatureEditor {
-  constructor({api, node, status, confirmDiscard, confirmPublish, canPublish = () => true, applied, getViewer}) {
-    Object.assign(this, {api, node, status, confirmDiscard, confirmPublish, canPublish, applied, getViewer});
+  constructor({api, node, status, confirmDiscard, confirmPublish, canPublish = () => true, applied, getViewer,
+               openProperties = () => $('npc-name').focus(), openPreview = () => {}}) {
+    Object.assign(this, {api, node, status, confirmDiscard, confirmPublish, canPublish, applied, getViewer, openProperties, openPreview});
     this.dirty = false; this.ticket = 0; this.seedTicket = 0; this.previewTicket = 0; this.busy = false;
     $('npc-edit').addEventListener('click', () => this.begin(false));
     $('npc-clone').addEventListener('click', () => this.begin(true));
@@ -254,7 +255,7 @@ export class CreatureEditor {
         this.draftTarget = edit.target_id; this.baseline = structuredClone(edit); this.fill(edit);
         $('npc-fields').disabled = false; $('npc-target').readOnly = this.mode !== 'clone';
         $('npc-form-title').textContent = `怪物草稿 #${edit.target_id}（来源 #${edit.source_id}）`; this.dirty = false;
-        $('npc-name').focus();
+        this.openProperties();
       });
       const remove = this.node('button','移除'); remove.type = 'button';
       remove.addEventListener('click',async () => {
@@ -330,7 +331,9 @@ export class CreatureEditor {
       const value = this.read(); const model = await this.api('/api/creature-preview',{appearance_id:value.appearance_id,scale:value.scale,...(value.model_ref?{model_ref:value.model_ref}:{})});
       if (ticket !== this.previewTicket) return;
       const viewer = this.getViewer(); if (!viewer) throw new Error('三维视口不可用，请检查浏览器 WebGL。');
+      this.openPreview();
       await viewer.show(model,message => { if (ticket === this.previewTicket) $('model-warnings').textContent = message; });
+      if (ticket !== this.previewTicket) return;
       $('model-warnings').textContent = '当前表单外观预览；完整动作与游戏碰撞效果待验收。'; this.error('');
     } catch (error) { if (ticket === this.previewTicket) this.error(error.message); }
   }

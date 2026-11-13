@@ -270,7 +270,7 @@ export class CreatureBrowser {
         td.colSpan = 2; tr.append(td); $('creature-drops').append(tr);
       }
       this.syncLocation(id);
-      this.status(`已打开 ${detail.name} · 可编辑模板或新增地图变体`);
+      this.status('');
       await this.showModel();
     } catch (error) {
       if (!this.active || ticket !== this.detailTicket) return;

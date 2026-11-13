@@ -25,6 +25,7 @@ from xyj_content.files import sha256, write_json
 from xyj_content.language import decode_language
 from xyj_content.models import item_model, read_mesh, texture_png
 from xyj_content.objects import find_unique, view_record
+from xyj_content.particles import effect_choices, particle_preview, validate_effect_references, weapon_anchors
 from xyj_content.patch import PAYLOAD_PATHS
 from xyj_content.settings import default_config
 
@@ -159,7 +160,7 @@ class EditorTests(unittest.TestCase):
 
     def test_expanded_schema_uses_actual_signed_byte_and_word_limits(self):
         schema = {field['key']: field for field in field_schema()}
-        self.assertEqual(len(schema), 27)
+        self.assertEqual(len(schema), 32)
         self.assertEqual((schema['range']['offset'], schema['range']['min'], schema['range']['max']),
                          (140, -32768, 32767))
         for key in ('damage', 'delay', 'range'):
@@ -169,7 +170,9 @@ class EditorTests(unittest.TestCase):
         for key in ('hp_recovery', 'mp_recovery'):
             self.assertEqual((schema[key]['min'], schema[key]['max'], schema[key]['group']), (-32768, 32767, 'recovery'))
         expected_offsets = {'hp_recovery': 130, 'mp_recovery': 132, 'resist_fire': 186, 'resist_water': 187,
-                            'resist_wind': 188, 'resist_thunder': 189, 'resist_light': 190, 'resist_dark': 191}
+                            'resist_wind': 188, 'resist_thunder': 189, 'resist_light': 190, 'resist_dark': 191,
+                            'active_skill': 374, 'passive_skill': 376, 'passive_chance': 380,
+                            'weapon_particle': 416, 'particle_speed': 424}
         self.assertEqual({key: schema[key]['offset'] for key in expected_offsets}, expected_offsets)
         self.assertEqual(schema['weight']['max'], 2147483647)
 
@@ -239,7 +242,8 @@ class EditorTests(unittest.TestCase):
                               struct.unpack_from('<h', record, 140)[0]), (80, 30, 100))
 
     def test_all_new_fields_accept_boundaries_and_reject_invalid_types_and_overflow(self):
-        schema = {field['key']: field for field in field_schema() if field['group'] != 'basic'}
+        schema = {field['key']: field for field in field_schema()
+                  if field['group'] in ('weapon', 'resistances', 'recovery')}
         # Exercise every field at each boundary with three whole-table roundtrips.
         for boundary in ('min', 'zero', 'max'):
             values = {key: 0 if boundary == 'zero' else field[boundary] for key, field in schema.items()}
@@ -256,6 +260,51 @@ class EditorTests(unittest.TestCase):
                 edit = self.edit(source=4028); edit['stats'] = {key: value}
                 with self.subTest(field=key, invalid=value), self.assertRaises(ContentError):
                     validate_edits(self.loaded, [edit])
+
+    def test_item_effect_edit_and_legacy_clone_roundtrip_on_both_sides(self):
+        effects = {'active_skill': 10869, 'passive_skill': 10841, 'passive_chance': -1,
+                   'weapon_particle': 371, 'particle_speed': 35}
+        edit = {**self.edit(source=286), 'stats': effects}
+        clone = {**self.edit(source=286, target=319), 'stats': {'delay': 35}}
+        blobs, changes = prepare_edits(self.loaded, [edit, clone])
+        self.assertEqual(len(changes[0]['fields']), len(effects))
+        for side, original in (('client_object', self.loaded.client), ('server_object', self.loaded.server)):
+            table = decode_table(blobs[side])
+            before = find_unique(original, 286)[1]
+            expected = bytearray(before)
+            for key, value in effects.items():
+                _, offset, fmt = FIELDS[key]
+                struct.pack_into('<' + fmt, expected, offset, value)
+                self.assertEqual(find_unique(table, 319)[1][offset:offset + struct.calcsize('<' + fmt)],
+                                 before[offset:offset + struct.calcsize('<' + fmt)])
+            self.assertEqual(find_unique(table, 286)[1], bytes(expected))
+
+    def test_new_item_effect_references_and_ranges_are_validated(self):
+        for key, value in (('active_skill', 286), ('passive_skill', 286), ('passive_chance', 100),
+                           ('weapon_particle', 5001), ('particle_speed', -1)):
+            with self.subTest(field=key), self.assertRaises(ContentError):
+                validate_edits(self.loaded, [{**self.edit(source=286), 'stats': {key: value}}])
+        edit = {**self.edit(source=286), 'stats': {'weapon_particle': 371}}
+        validate_effect_references(self.loaded, [edit], PROJECT / 'swdol')
+        with self.assertRaises(ContentError):
+            validate_effect_references(self.loaded, [edit], PROJECT / 'output')
+        with self.assertRaises(ContentError):
+            validate_effect_references(self.loaded, [{**edit, 'stats': {'weapon_particle': 5000}}], PROJECT / 'swdol')
+        inherited = item_detail(self.loaded, 286)['stats']['weapon_particle']
+        validate_effect_references(self.loaded, [{**edit, 'stats': {'weapon_particle': inherited}}], PROJECT / 'output')
+
+    def test_native_weapon_effect_samples_resolve_mesh_textures_and_anchors(self):
+        client = PROJECT / 'swdol'
+        available = {row['id'] for row in effect_choices(client)}
+        for item_id, effect_id, file in ((251, 215, 'MGC00039'), (286, 329, 'MGC00232'),
+                                         (304, 371, 'MGC00034'), (315, 7, 'MGC00038')):
+            with self.subTest(item=item_id):
+                self.assertIn(effect_id, available)
+                self.assertEqual(item_detail(self.loaded, item_id)['stats']['weapon_particle'], effect_id)
+                preview = particle_preview(client, effect_id)
+                self.assertIn(file, preview['file'].upper())
+                self.assertTrue(any(mesh['texture'] is not None for mesh in preview['meshes']))
+                self.assertEqual(len(weapon_anchors(item_model(client, find_unique(self.loaded.client, item_id)[1]))), 2)
 
     def test_export_rebuild_verifier_detects_rehashed_opaque_byte_tampering(self):
         with tempfile.TemporaryDirectory(dir=PROJECT / 'output', prefix='editor-test-') as temp:

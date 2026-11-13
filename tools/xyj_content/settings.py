@@ -210,10 +210,13 @@ class SettingsController:
             checks.append({'name': '配置格式', 'status': 'passed', 'message': '路径及连接字段格式有效。'})
             if sys.version_info < (3, 11) or not importlib.util.find_spec('lzokay'):
                 raise ContentError('需要 Python 3.11 或更新版本及 lzokay 依赖。')
-            for path in ('three.module.js', 'three.core.js'):
-                read_bytes(self.root / 'editor/node_modules/three/build' / path)
-            read_bytes(self.root / 'editor/node_modules/three/examples/jsm/controls/OrbitControls.js')
-            checks.append({'name': '运行环境', 'status': 'passed', 'message': f'Python {platform.python_version()}、lzokay 与 Three.js 可读取。'})
+            editor = self.root / 'editor'
+            if (editor / 'dist/index.html').is_file():
+                read_bytes(editor / 'dist/index.html')
+            else:
+                for path in ('build/three.module.js', 'build/three.core.js', 'examples/jsm/controls/OrbitControls.js'):
+                    read_bytes(editor / 'node_modules/three' / path)
+            checks.append({'name': '运行环境', 'status': 'passed', 'message': f'Python {platform.python_version()}、lzokay 和前端文件可读取。'})
             clear_resource_caches()
             candidate = self.factory(config)
             _, resources, _, maps = resolve_paths(self.root, config)

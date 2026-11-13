@@ -1,12 +1,16 @@
 import {operationMode, targetIdError, replaceDraftOperation, displayProperties, weaponProperties, hasWeaponProperties} from './item-workflow.js';
+import {state} from './workspace-store.js';
 
 const $ = id => document.getElementById(id);
-const state = {items: [], fields: [], edits: [], revision: 0, details: new Map(), selected: null,
-  draftTarget: null, dirty: false, busy: false, loading: false, mode: 'view', formBaseline: null,
-  choosingTemplate: false, baselineIds: new Set(), idsLoaded: false, ready: false,
-  page: 0, ticket: 0, previewTicket: 0, previewMode: 'equipped', library: 'items'};
-let viewer, creatures, creatureEditor, settingsPanel, itemDropSources, acquisitionForm;
+let viewer, creatures, creatureEditor, settingsPanel, itemDropSources, acquisitionForm, itemEffects;
 let acquisitionSummary = () => [];
+
+/** Reveal a mounted workspace pane without reloading its controls. */
+function revealPane(pane, focusId) {
+  state.mobilePane = pane;
+  if (!focusId) return;
+  requestAnimationFrame(() => $(focusId)?.focus({preventScroll: true}));
+}
 
 /** Confirm the existing stopped-server prerequisite once inside the publication action. */
 async function confirmPublication(edits = [], recovery = false) {
@@ -33,25 +37,16 @@ async function switchLibrary(library, templateId = null) {
     return;
   }
   state.library = library;
+  revealPane(templateId === null ? 'library' : 'properties');
   state.ticket++; state.previewTicket++;
+  $('particle-preview-note').textContent = '';
   const npc = library === 'creatures';
-  $('export').hidden = npc;
-  $('workspace-main').classList.toggle('creatures-layout', npc);
   $('item-library').hidden = $('properties').hidden = npc;
   $('creature-library').hidden = $('creature-properties').hidden = !npc;
   document.querySelector('.preview-settings').hidden = npc;
-  document.querySelector('.draft-area').hidden = npc;
   $('item-drop-sources').hidden = npc;
   document.querySelector('.detail-icon').hidden = npc;
-  document.querySelector('.eyebrow').hidden = npc;
   $('viewport').setAttribute('aria-label', npc ? 'NPC与怪物三维预览' : '道具三维预览');
-  const skip = document.querySelector('.skip');
-  skip.href = npc ? '#creature-properties' : '#properties';
-  skip.textContent = npc ? '跳到NPC与怪物详情' : '跳到道具属性';
-  $('library-items').setAttribute('aria-pressed', String(!npc));
-  $('library-creatures').setAttribute('aria-pressed', String(npc));
-  $('preview-scope-note').textContent = npc ? '模板静态首帧预览；动画、染色与动态特效尚未完整还原。' :
-    '基础模型预览使用原始材质；装备姿态、染色和特效仍需与游戏内核对。';
   viewer?.clear();
   if (npc) {
     itemDropSources?.cancel();
@@ -65,7 +60,7 @@ async function switchLibrary(library, templateId = null) {
       syncIdentity();
       $('slot-label').textContent = item.slots.map(s => s.label).join(' / ') || item.type_label;
       history.replaceState(null, '', `/?id=${item.id}`);
-      status(state.dirty ? '已返回道具；未暂存的修改仍保留在表单中。' : `已返回 ${item.name}`);
+      status('');
       refreshDropSources();
       await loadPreview();
     }
@@ -91,7 +86,7 @@ async function api(path, body) {
   return value;
 }
 
-function status(text, error = false) { $('status').textContent = text; $('status').classList.toggle('error', error); }
+function status(text, error = false) { state.notice = {text, error}; }
 
 /** Protect unsaved input with a keyboard-accessible decision; Escape always retains the form. */
 async function confirmDiscard(message) {
@@ -131,26 +126,22 @@ function syncWorkflow() {
   const creating = state.mode === 'create';
   const properties = $('properties');
   properties.dataset.mode = state.mode;
-  // Keep editable fields first during a task, without moving the focused form on each keystroke.
-  const first = state.mode === 'view' ? $('template-properties') : $('form');
-  const second = state.mode === 'view' ? $('form') : $('template-properties');
-  if (first.nextElementSibling !== second) properties.insertBefore(first, second);
   $('properties-title').textContent = creating ? '新增道具' : state.mode === 'edit' ? '编辑道具' : '道具属性';
   $('target-id-label').textContent = creating ? '新道具 ID' : '道具 ID';
   $('target-id').readOnly = !creating;
   $('suggest-id').hidden = !creating;
   $('form-actions').hidden = state.mode === 'view';
   $('stage').textContent = creating ? '暂存新增' : '暂存修改';
-  $('workflow-note').textContent = creating ? '修改名称、说明和基础属性后暂存新增。图标和模型沿用模板。' :
-    state.mode === 'edit' ? '正在编辑现有道具，原 ID 固定。暂存并核对后，可备份并覆盖双端文件。' :
-    '当前为查看模式。点击“编辑道具”修改，或以此为模板新增。';
   $('template-source').hidden = !creating;
-  if (creating) $('template-source').textContent = `模板：${state.selected.name}（ID ${state.selected.id}）· 使用原始基线，独立于模板的修改草稿。`;
+  if (creating) $('template-source').textContent = `模板 ${state.selected.name} #${state.selected.id}`;
   $('edit-state').textContent = !state.selected?.editable ? '只读' :
     state.dirty ? '未暂存' : state.draftTarget !== null ? '已暂存' : state.mode === 'edit' ? '编辑中' : '原始记录';
   updateIdHint();
   syncIdentity();
   refreshDisplayedProperties();
+  itemEffects?.setEditing(state.mode !== 'view');
+  itemEffects?.render();
+  refreshItemParticles();
   refreshDropSources();
   setBusy(state.busy);
 }
@@ -270,9 +261,8 @@ function renderTemplateProperties(properties) {
 }
 
 function renderItems() {
-  const query = $('search').value.trim().toLowerCase();
-  const category = $('category').value;
-  const items = state.items.filter(item => (!$('only-editable').checked || item.is_item) &&
+  const {query, category, onlyItems} = state.itemFilters;
+  const items = state.items.filter(item => (!onlyItems || item.is_item) &&
     (!state.choosingTemplate || (item.item_asset && item.id <= 32767)) &&
     (category === 'all' || item.categories.includes(category)) &&
     (!query || item.name.toLowerCase().includes(query) || String(item.id).includes(query)));
@@ -299,13 +289,26 @@ function renderItems() {
     if (!item.has_icon) { icon.removeAttribute('src'); markMissing(); }
     if (state.edits.some(edit => edit.source_id === item.id)) button.append(node('span', '草稿', 'draft-dot'));
     button.disabled = state.busy;
-    button.addEventListener('click', () => select(item.id, null, state.choosingTemplate ? 'create' : 'view'));
+    button.addEventListener('click', async () => {
+      const mode = state.choosingTemplate ? 'create' : 'view';
+      if (await select(item.id, null, mode) && mode === 'view') revealPane('preview');
+    });
     $('items').append(button);
   }
   if (!items.length) $('items').append(node('p', '没有匹配的道具。', 'muted'));
   $('page-info').textContent = `${state.page + 1} / ${pages}`;
   $('prev').disabled = state.page === 0;
   $('next').disabled = state.page + 1 >= pages;
+}
+
+function updateItemFilters() {
+  state.itemFilters = {
+    query: $('search').value.trim().toLowerCase(),
+    category: $('category').value,
+    onlyItems: $('only-editable').checked,
+  };
+  state.page = 0;
+  renderItems();
 }
 
 function fillForm(edit, mode = 'view', targetId = null) {
@@ -315,6 +318,7 @@ function fillForm(edit, mode = 'view', targetId = null) {
   $('item-name').value = edit?.name ?? item.name;
   $('description').value = edit?.description ?? item.description;
   for (const field of state.fields) $(`stat-${field.key}`).value = edit?.stats[field.key] ?? item.stats[field.key];
+  itemEffects?.set(item, edit?.stats);
   acquisitionForm?.set(edit?.acquisition);
   state.dirty = mode === 'create' && !edit;
   state.draftTarget = edit?.target_id ?? null;
@@ -322,7 +326,7 @@ function fillForm(edit, mode = 'view', targetId = null) {
   state.formBaseline = {target_id: $('target-id').value, name: $('item-name').value,
     description: $('description').value,
     stats: Object.fromEntries(state.fields.map(field => [field.key, $(`stat-${field.key}`).value])),
-    acquisition: structuredClone(edit?.acquisition || null)};
+    acquisition: structuredClone(edit?.acquisition || null), effects: itemEffects?.get() || {}};
   $('appearance').textContent = `外观脚本 ${item.actor} / 模式 ${item.mode} / 装备动作 ${item.mode + 2}`;
   $('readonly-reason').textContent = item.readonly_reason;
   syncWorkflow();
@@ -376,17 +380,16 @@ async function select(id, target = null, mode = 'view') {
     $('preview-mode').disabled = false;
     $('preview-mode').value = item.type === 2 ? state.previewMode : 'single';
     history.replaceState(null, '', `/?id=${id}`);
-    status(state.mode === 'create' ? `新增道具 · 模板 ${item.name}（${id}）· 暂存后生成独立记录` :
-      `已打开 ${item.name} · 基线 ${item.id} · 修改仅保存至本地草稿`);
+    status('');
     state.loading = false;
     setBusy(state.busy);
     if (state.mode !== 'view') {
-      $('properties').scrollTop = 0;
+      $('workspace-properties').scrollTop = 0;
       $('properties-title').setAttribute('tabindex', '-1');
-      $('properties-title').focus({preventScroll: true});
-      $('properties').scrollIntoView({block: 'start'});
-    }
+      revealPane('properties', target === null ? 'properties-title' : undefined);
+    } else if (matchMedia('(max-width: 999px)').matches) revealPane('preview');
     await loadPreview();
+    return ticket === state.ticket;
   } catch (error) { if (ticket === state.ticket) {
     status(error.message, true);
     if (state.choosingTemplate) $('template-error').textContent = error.message;
@@ -408,6 +411,7 @@ async function restoreForm() {
   $('item-name').value = saved.name;
   $('description').value = saved.description;
   for (const field of state.fields) $(`stat-${field.key}`).value = saved.stats[field.key];
+  itemEffects?.set(state.selected, saved.effects);
   acquisitionForm?.set(saved.acquisition);
   state.dirty = state.mode === 'create' && state.draftTarget === null;
   $('form-error').textContent = '';
@@ -420,6 +424,8 @@ async function loadPreview() {
   if (!state.selected || state.library !== 'items') return;
   const id = state.selected.id, ticket = ++state.previewTicket;
   const mode = $('preview-mode').value;
+  state.itemPreview = null;
+  $('particle-preview-note').textContent = '';
   $('profile').disabled = mode !== 'equipped';
   $('model-info').textContent = '正在读取外观…';
   $('model-warnings').textContent = '';
@@ -432,15 +438,51 @@ async function loadPreview() {
     await viewer.show(model, message => {
       if (ticket === state.previewTicket) $('model-warnings').textContent += ` ${message}`;
     });
+    if (ticket !== state.previewTicket) return;
     viewer.wireframe($('wireframe').checked);
     $('model-message').textContent = '';
     const label = mode === 'equipped' ? `人物穿戴 · ${model.profile_label}` : model.mode_label;
     $('model-info').textContent = `${label} · ${model.vertices} 顶点 / ${model.triangles} 三角面`;
     $('model-warnings').textContent = model.warnings.join(' ');
+    state.itemPreview = {ticket, anchors: model.particle_anchors};
+    refreshItemParticles();
   } catch (error) {
     if (ticket !== state.previewTicket) return;
     $('model-message').textContent = error.message;
     $('model-info').textContent = '当前方式无法显示三维外观';
+  }
+}
+
+/** Refresh only the emitter; a delayed effect cannot attach to another item or preview mode. */
+async function refreshItemParticles() {
+  const preview = state.itemPreview;
+  if (!itemEffects || !viewer || state.library !== 'items' || preview?.ticket !== state.previewTicket) return;
+  const {id, speed} = itemEffects.preview();
+  const note = $('particle-preview-note');
+  if (!Number.isFinite(speed)) return;
+  if (preview.effectId === id) {
+    if (viewer.particles?.id === id) viewer.particles.speed = speed;
+    return;
+  }
+  preview.effectId = id;
+  const request = (preview.effectRequest || 0) + 1;
+  preview.effectRequest = request;
+  const current = () => state.itemPreview === preview && state.previewTicket === preview.ticket && preview.effectRequest === request;
+  viewer.clearParticles();
+  note.textContent = '';
+  if (id <= 0) return;
+  if (!preview.anchors) { note.textContent = '此模型缺少武器粒子挂点。'; return; }
+  note.textContent = '正在读取武器粒子…';
+  try {
+    const effect = await api(`/api/item-effects/particle/${id}`);
+    if (!current()) return;
+    if (effect.workspace_generation !== state.workspaceGeneration) throw new Error('数据源已切换，请刷新页面。');
+    const liveSpeed = itemEffects.preview().speed;
+    viewer.setParticles(effect, preview.anchors, Number.isFinite(liveSpeed) ? liveSpeed : speed,
+      message => { if (current()) note.textContent = message; });
+    note.textContent = `粒子预览 · #${id} ${effect.name}（原生资源，近似播放）`;
+  } catch (error) {
+    if (current()) note.textContent = `粒子暂不可预览：${error.message}`;
   }
 }
 
@@ -455,7 +497,11 @@ async function renderDrafts() {
     const open = node('button', `${edit.target_id === edit.source_id ? '编辑' : '新增'} #${edit.target_id} ${edit.name}`);
     open.dataset.openDraft = String(edit.target_id);
     open.disabled = state.busy || state.loading;
-    open.addEventListener('click', () => select(edit.source_id, edit.target_id));
+    open.addEventListener('click', async () => {
+      if (!await select(edit.source_id, edit.target_id)) return;
+      $('draft-window').close();
+      revealPane('properties', 'properties-title');
+    });
     const remove = node('button', '移除');
     remove.dataset.remove = String(edit.target_id);
     remove.setAttribute('aria-label', `从草稿移除 ${edit.name}`);
@@ -466,7 +512,7 @@ async function renderDrafts() {
     if (edit.target_id !== edit.source_id) diffs.push(['ID', edit.source_id, edit.target_id]);
     if (edit.name !== before.name) diffs.push(['名称', before.name, edit.name]);
     if (edit.description !== before.description) diffs.push(['说明', before.description, edit.description]);
-    for (const field of state.fields) if (edit.stats[field.key] !== undefined && edit.stats[field.key] !== before.stats[field.key]) {
+    for (const field of [...state.fields, ...state.effectFields]) if (edit.stats[field.key] !== undefined && edit.stats[field.key] !== before.stats[field.key]) {
       diffs.push([field.label, before.stats[field.key], edit.stats[field.key]]);
     }
     for (const [label, old, value] of diffs) {
@@ -480,7 +526,7 @@ async function renderDrafts() {
     entries.push(entry);
   }
   if (revision !== state.revision) return;
-  if (!entries.length) entries.push(node('p', '尚无草稿。编辑现有道具，或点击“新增道具”选择模板。', 'muted'));
+  if (!entries.length) entries.push(node('p', '没有道具草稿', 'empty-state'));
   $('draft-list').replaceChildren(...entries);
   $('draft-count').textContent = `${state.edits.length} 个操作`;
   $('export').disabled = state.busy || state.loading || !state.edits.length;
@@ -507,6 +553,8 @@ async function stage(event) {
   setBusy(true);
   $('form-error').textContent = '';
   try {
+    if (state.effectFields.length && !itemEffects) throw new Error('技能与粒子表单未加载，请刷新后暂存。');
+    Object.assign(stats, itemEffects?.get());
     if (acquisitionForm) edit.acquisition = acquisitionForm.get();
     else if (state.formBaseline?.acquisition && Object.values(state.formBaseline.acquisition).some(v => Array.isArray(v) ? v.length : v)) {
       throw new Error('获取途径模块尚未加载，请重启编辑器并刷新后暂存，避免丢失原配置。');
@@ -572,8 +620,16 @@ async function start() {
       if (settingsPanel) await settingsPanel.open(true);
       return;
     }
-    Object.assign(state, {items: data.items, fields: data.fields, edits: data.edits,
+    Object.assign(state, {items: data.items, fields: data.fields.filter(field => field.group !== 'effects'),
+      effectFields: data.fields.filter(field => field.group === 'effects'), edits: data.edits,
       revision: data.revision, token: data.token, ready: true, exportMode: data.export_mode});
+    if (state.effectFields.length) {
+      try {
+        const {ItemEffectsForm} = await import('./item-effects.js');
+        itemEffects = new ItemEffectsForm({api, node, getGeneration: () => state.workspaceGeneration});
+        itemEffects.load();
+      } catch (error) { status(`技能与粒子表单加载失败：${error.message}`, true); }
+    }
     try {
       const module = await import('./acquisition.js');
       acquisitionSummary = module.acquisitionSummary;
@@ -607,7 +663,7 @@ async function start() {
       const p = node('p', `${labels[key]}：${source.path}`); p.append(node('code', source.sha256)); $('sources').append(p);
     }
     try {
-      const {Viewer} = await import('/viewer.js');
+      const {Viewer} = await import('./viewer.js');
       viewer = new Viewer($('viewport'));
     } catch (error) { console.error('三维视口初始化失败', error); }
     if (!viewer) for (const control of document.querySelectorAll('.view-controls button, .view-controls input')) control.disabled = true;
@@ -616,6 +672,8 @@ async function start() {
       const {CreatureEditor} = await import('./creature-editor.js');
       creatureEditor = new CreatureEditor({api, node, status, confirmDiscard, confirmPublish: confirmPublication,
         canPublish: () => !state.dirty, getViewer: () => viewer,
+        openProperties: () => { if ($('draft-window').open) $('draft-window').close(); revealPane('properties', 'npc-name'); },
+        openPreview: () => revealPane('preview'),
         applied: target => { location.assign(`/?library=creatures&map=all&npc=${target}`); }});
       creatures = new CreatureBrowser({api, node, getViewer: () => viewer, status,
         beforeSelect: id => creatureEditor.canSelect(id), onSelected: id => creatureEditor.select(id),
@@ -672,9 +730,9 @@ $('suggest-id').addEventListener('click', suggestId);
 $('cancel-edit').addEventListener('click', () => select(state.selected.id));
 $('restore').addEventListener('click', restoreForm);
 $('export').addEventListener('click', exportPatch);
-$('search').addEventListener('input', () => { state.page = 0; renderItems(); });
-$('only-editable').addEventListener('change', () => { state.page = 0; renderItems(); });
-$('category').addEventListener('change', () => { state.page = 0; renderItems(); });
+$('search').addEventListener('input', updateItemFilters);
+$('only-editable').addEventListener('change', updateItemFilters);
+$('category').addEventListener('change', updateItemFilters);
 $('preview-mode').addEventListener('change', () => { state.previewMode = $('preview-mode').value; loadPreview(); });
 $('profile').addEventListener('change', loadPreview);
 $('prev').addEventListener('click', () => { state.page--; renderItems(); });

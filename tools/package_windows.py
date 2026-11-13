@@ -15,6 +15,11 @@ def main():
     """Package runtime and sanitized map identities only; game resource locations are selected on the target PC."""
     root = Path(__file__).resolve().parents[1]
     version = read_json(root / 'editor/package.json')['version']
+    frontend = root / 'editor/dist'
+    assets = sorted(path for path in (frontend / 'workshop-assets').glob('*')
+                    if re.fullmatch(r'[\w-]+-[\w-]{8}\.(?:js|css)', path.name, flags=re.ASCII) and path.is_file())
+    if not (frontend / 'index.html').is_file() or not assets:
+        raise ValueError('请先执行 npm --prefix editor run build。')
     archive = output_path(root, Path(f'output/migration/道具工坊-{version}-Windows-{uuid.uuid4().hex[:8]}.zip'))
     archive.parent.mkdir(parents=True, exist_ok=True)
     files = [*sorted((root / 'tools').rglob('*.py')),
@@ -25,13 +30,8 @@ def main():
                                         'research/2026-11-04/人物穿戴自动匹配0.5.5修复.md',
                                         'research/2026-11-06/怪物自动覆盖0.13说明.md',
                                         'research/2026-11-06/内置怪物模型编辑0.14说明.md')],
-             *[root / 'editor' / name for name in ('index.html','app.js','settings.js','creatures.js','creature-editor.js',
-                                                  'acquisition.js','item-drops.js','item-workflow.js','viewer.js','style.css',
-                                                  'model-editor.js','model-operations.js','model-viewport.js',
-                                                  'package.json','package-lock.json')],
-             *[root / 'editor/node_modules/three' / name for name in ('LICENSE','build/three.module.js','build/three.core.js',
-                                                                    'examples/jsm/controls/OrbitControls.js',
-                                                                    'examples/jsm/controls/TransformControls.js')],
+             frontend / 'index.html', frontend / '.vite/license.md', *assets,
+             root / 'editor/item-workflow.js', root / 'editor/package.json',
              root / 'output/patch-live-baseline-318/server/qingfeng/Object.dbf',
              root / 'XYJ_SEVVER/qingfeng/map.tb', root / 'XYJ_SEVVER/mysql/bin/mysql.exe']
     client = root / 'XYJ_SEVVER/mysql/bin/mysql.exe'

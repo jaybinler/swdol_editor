@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 output/
 editor/node_modules/
+editor/dist/
 
 # Original game resources and databases stay outside source control.
 /swdol/

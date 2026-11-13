@@ -1,3 +1,7 @@
+import {createElement} from 'react';
+import {createRoot} from 'react-dom/client';
+import {flushSync} from 'react-dom';
+import {ModelStudio} from './model-studio.jsx';
 import {ModelHistory,topology,removeBone,boneDelta,transform,validate,evaluate} from './model-operations.js';
 import {ModelViewport} from './model-viewport.js';
 
@@ -6,27 +10,16 @@ const emptySelection=()=>({vertices:new Set(),edges:new Set(),faces:new Set(),bo
 const stable=value=>JSON.stringify(value,(_key,v)=>v && typeof v==='object' && !Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
 const vector=(prefix,values)=>values.forEach((v,i)=>$(`${prefix}-${i}`).value=Number(v.toFixed(5)));
 const readVector=prefix=>[0,1,2].map(i=>Number($(`${prefix}-${i}`).value));
-const field=(label,prefix,values=[0,0,0])=>`<fieldset class="model-vector"><legend>${label}</legend>${values.map((v,i)=>`<label>${['X','Y','Z'][i]}<input id="${prefix}-${i}" type="number" value="${v}" step="any"></label>`).join('')}</fieldset>`;
 
 /** Full in-workshop authoring controller; immutable model references attach to ordinary monster drafts. */
 export class ModelEditor {
   constructor({api,confirmDiscard,onSaved}) {
     Object.assign(this,{api,confirmDiscard,onSaved});this.busy=false;this.mode='vertex';this.selection=emptySelection();
     this.dialog=document.createElement('dialog');this.dialog.id='model-studio';this.dialog.className='model-studio';this.dialog.setAttribute('aria-labelledby','model-studio-title');
-    this.dialog.innerHTML=`
-      <header class="model-studio-header"><div><h2 id="model-studio-title">怪物模型编辑</h2><p id="model-studio-note" class="property-note"></p></div><div class="model-actions"><button id="model-save" class="primary">保存模型草稿</button><button id="model-close">返回怪物</button></div></header>
-      <div class="model-toolbar" aria-label="模型编辑工具"><div class="model-actions" id="model-modes"><button data-mode="vertex" aria-pressed="true">顶点</button><button data-mode="edge" aria-pressed="false">边</button><button data-mode="face" aria-pressed="false">面</button><button data-mode="bone" aria-pressed="false">骨骼</button></div><div class="model-actions" id="model-transforms"><button data-transform="translate" aria-pressed="true">移动</button><button data-transform="rotate" aria-pressed="false">旋转</button><button data-transform="scale" aria-pressed="false">缩放</button></div><div class="model-actions"><button id="model-undo">撤销</button><button id="model-redo">重做</button><button id="model-fit">适应视口</button><button id="model-all">全选</button><button id="model-none">取消选择</button></div></div>
-      <p id="model-studio-message" class="model-message" role="status" aria-live="polite"></p>
-      <div class="model-studio-body">
-        <aside class="model-tree"><label>动作模型<select id="model-asset"></select></label><p id="model-counts" class="property-note"></p><h3>编辑骨骼</h3><p class="property-note">按原生分组建立，修改后烘焙为原生姿态。</p><div id="model-bone-list" class="model-bone-list" role="list" aria-label="编辑骨骼"></div><div class="model-actions"><button id="model-add-bone">新增骨骼</button><button id="model-remove-bone">删除骨骼</button></div><button id="model-source">重新读取游戏模型</button></aside>
-        <section class="model-canvas-column" aria-label="编辑和动作预览"><div id="model-canvas" class="model-canvas"></div><div class="model-timeline"><label>动作<select id="model-action"></select></label><button id="model-play" aria-pressed="false">播放</button><label>预览帧率<input id="model-fps" type="number" min="1" max="60" value="10"></label><label class="model-frame-range">姿态<input id="model-frame" type="range" min="0" value="0"></label><output id="model-frame-number">0</output></div><div class="model-actions"><label class="model-check"><input id="model-wire" type="checkbox" checked>线框</label><label class="model-check"><input id="model-show-bones" type="checkbox">显示骨骼</label><p class="property-note">点击选择 · Ctrl多选 · Shift拖动框选 · 右键平移 · 滚轮缩放</p></div></section>
-        <aside class="model-inspector"><p id="model-selection" class="property-note"></p>
-          <details open><summary>顶点与拓扑</summary>${field('绑定姿态坐标','model-position')}<button id="model-set-position">移动选中顶点中心到此坐标</button>${field('增量移动','model-move')}${field('旋转（度）','model-rotate')}${field('比例','model-scale',[1,1,1])}<button id="model-apply-transform">应用选区变换</button><div class="model-actions model-topology"><button data-operation="vertex">新增顶点</button><button data-operation="face">新增三角面</button><button data-operation="split">分割</button><button data-operation="merge">合并顶点</button><button data-operation="delete">删除选区</button></div><label>挤出距离<input id="model-extrude-distance" type="number" step="any" value="1"></label><button id="model-extrude">挤出选中面</button><div class="model-two"><label>U<input id="model-u" type="number" step="any" value="0"></label><label>V<input id="model-v" type="number" step="any" value="0"></label></div><button id="model-set-uv">设置选中顶点UV</button></details>
-          <details id="model-bone-panel"><summary>骨骼与绑定</summary><label>当前骨骼<select id="model-bone"></select></label><label>名称<input id="model-bone-name" maxlength="100"></label><label>父级<select id="model-parent"></select></label><label>动作来源<select id="model-source-group"></select></label>${field('绑定关节位置','model-pivot')}${field('骨骼移动','model-bone-position')}${field('骨骼旋转（度）','model-bone-rotation')}${field('骨骼比例','model-bone-scale',[1,1,1])}<label class="model-check"><input id="model-pose-key" type="checkbox">只修改当前姿态</label><button id="model-set-bone">应用骨骼修改</button><button id="model-delete-key">移除当前姿态修改</button><h4>选中顶点的骨骼权重</h4><div id="model-weights"></div><div class="model-actions"><button id="model-add-weight">添加绑定</button><button id="model-set-weights">应用权重</button></div><p class="property-note">最多4根骨骼，权重合计为1。先选顶点，再设置绑定。</p></details>
-          <details open><summary>材质与贴图</summary><label>材质<select id="model-material"></select></label><button id="model-assign-material">应用到选中面</button><img id="model-texture-preview" alt="游戏编码后的材质贴图" hidden><div class="model-rgb">${['红','绿','蓝'].map((name,i)=>`<label>${name}<input id="model-tint-${i}" type="number" min="0" max="4" step="0.05" value="1"></label>`).join('')}</div><button id="model-apply-tint">应用调色</button><label>导入PNG<input id="model-png" type="file" accept="image/png"></label><div class="model-actions"><button id="model-download-texture">导出PNG</button><button id="model-restore-texture">恢复来源贴图</button></div><p class="property-note">预览为最终RGB555颜色；透明度按128分界转换为透明或不透明。PNG最大2048×2048。</p></details>
-        </aside>
-      </div>`;
-    document.body.append(this.dialog);this.bind();
+    document.body.append(this.dialog);
+    const root = createRoot(this.dialog);
+    flushSync(() => root.render(createElement(ModelStudio)));
+    this.bind();
   }
   get dirty(){return this.busy||this.models?.some(m=>m.history.dirty)||false;}
   get current(){return this.models?.[this.index];}
@@ -66,7 +59,6 @@ export class ModelEditor {
       this.data=await this.api(`/api/model-edit/open?template_id=${template}${reference?`&reference=${reference}`:''}${fresh?'&fresh=1':''}`);
       this.models=this.data.models.map(m=>({...m,history:new ModelHistory(m.document)}));this.reference=this.data.reference;this.selection=emptySelection();this.frame=0;
       $('model-studio-title').textContent=`怪物 #${template} · 模型编辑`;
-      $('model-studio-note').textContent='修改作用于当前动作模型。保存后返回暂存怪物，再导出并覆盖双端。';
       $('model-asset').replaceChildren();this.models.forEach((m,i)=>this.option($('model-asset'),i,m.file));
       $('model-action').replaceChildren();this.option($('model-action'),'', '全部姿态');for(const a of this.data.actions.filter(a=>a.poses.length))this.option($('model-action'),a.selector,`动作 ${a.selector} · ${a.poses.length} 个姿态`);
       if(!this.dialog.open)this.dialog.showModal();this.viewport?.dispose();

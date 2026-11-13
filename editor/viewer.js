@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { WeaponParticles } from './particle-preview.js';
 
 /** On-demand Three.js viewport; replacing models disposes every GPU resource. */
 export class Viewer {
@@ -28,6 +29,8 @@ export class Viewer {
   /** Fit the canvas to its CSS viewport without changing layout. */
   resize() {
     const {width, height} = this.host.getBoundingClientRect();
+    this.visible = width > 0 && height > 0;
+    if (!this.visible) return;
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / Math.max(1, height);
     this.camera.updateProjectionMatrix();
@@ -36,6 +39,7 @@ export class Viewer {
   /** Release the old mesh, materials and textures before showing another item. */
   clear() {
     this.ticket++;
+    this.clearParticles();
     for (const mesh of [...this.group.children]) {
       mesh.geometry.dispose();
       mesh.material.map?.dispose();
@@ -43,6 +47,18 @@ export class Viewer {
       this.group.remove(mesh);
     }
     this.render();
+  }
+
+  /** Attach a new emitter to the currently displayed item model. */
+  setParticles(effect, anchors, speed, warning) {
+    this.clearParticles();
+    this.particles = new WeaponParticles(this.group, effect, anchors, speed, () => this.visible, () => this.render(), warning);
+  }
+
+  /** Remove effect playback independently of the base item model. */
+  clearParticles() {
+    this.particles?.dispose();
+    this.particles = null;
   }
   /** Load original indexed meshes with their original TEX textures; report failures visibly. */
   async show(model, warning) {
@@ -110,9 +126,9 @@ export class Viewer {
     this.render();
   }
   /** Toggle polygon inspection without changing game assets. */
-  wireframe(value) { for (const mesh of this.group.children) mesh.material.wireframe = value; this.render(); }
+  wireframe(value) { for (const mesh of this.group.children) if (mesh.material) mesh.material.wireframe = value; this.render(); }
   /** Render only on view changes, resize and resource completion. */
-  render() { this.renderer.render(this.scene, this.camera); }
+  render() { if (this.visible) this.renderer.render(this.scene, this.camera); }
   /** Release observers, controls and GPU state when the page is closed. */
   dispose() { this.clear(); this.observer.disconnect(); this.controls.dispose(); this.renderer.dispose(); }
 }

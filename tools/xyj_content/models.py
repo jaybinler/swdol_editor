@@ -52,7 +52,7 @@ def read_action(client: Path, actor: int, selector: int) -> dict:
     result = {"actor": actor, "selector": selector, "scale": [1, 1, 1], "warnings": []}
     sizes = {b"PT": 1, b"AT": 2, b"XB": 32, b"FR": 2, b"AP": 2,
              b"OC": 8, b"CS": 12, b"VO": 0, b"e\0": 0, b"XF": 4,
-             b"IS": 12, b"PS": 2, b"DE": 0}
+             b"IS": 12, b"PS": 2, b"DE": 0, b"2O": 0}
     # Native 0x4966a0..0x496788: numeric opcodes 100..106 only OR flags at actor +0x80.
     # They consume no payload. Keep their effect explicit instead of guessing blend/depth behavior.
     sizes.update({struct.pack('<H', value): 0 for value in range(100, 107)})
@@ -82,7 +82,7 @@ def read_action(client: Path, actor: int, selector: int) -> dict:
         elif 100 <= int.from_bytes(op, 'little') <= 106:
             result['render_flags'] = result.get('render_flags', 0) | 1 << (int.from_bytes(op, 'little') - 100)
             result['warnings'].append('已读取原生渲染标记；相关混合与深度效果尚未还原。')
-        elif op == b"VO":
+        elif op in (b"VO", b"2O"):
             ended = True
             break
     if not ended or result.get("kind") not in (0, 1, 2) or "frame" not in result:
@@ -104,7 +104,7 @@ def resolve_model(client: Path, frame: int) -> Path:
         raise ContentError("模型索引格式无效。")
     physical = struct.unpack_from("<I", blob, 128 + (index - 1) * 4)[0]
     prefix = blob[72:104].split(b"\0", 1)[0].decode("ascii", "strict")
-    if prefix not in ("CHR", "ITM", "MAG", "SYS", "MAP", "OTH") or not 1 <= physical <= 99999:
+    if prefix not in ("CHR", "ITM", "MAG", "MGC", "SYS", "MAP", "OTH") or not 1 <= physical <= 99999:
         raise ContentError("模型索引的文件名无效。")
     return client / "MODEL" / f"{prefix}{physical:05d}.PLY"
 

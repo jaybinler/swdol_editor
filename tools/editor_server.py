@@ -8,6 +8,7 @@ from threading import RLock
 from urllib.parse import urlsplit, parse_qs
 import json
 import mimetypes
+import re
 import secrets
 import struct
 import sys
@@ -114,6 +115,8 @@ class EditorState:
         if set(value) != {'revision', 'edits'} or type(value['revision']) is not int or value['revision'] != self.revision:
             raise ContentError("草稿已在其他页面修改，请刷新后再操作。")
         edits = validate_edits(self.loaded, value['edits'])
+        from xyj_content.particles import validate_effect_references
+        validate_effect_references(self.loaded, edits, self.client)
         self.load_creature_draft()
         reserved = {e['target_id'] for e in self.creature_edits}
         if any(e['target_id'] in reserved for e in edits):
@@ -318,6 +321,20 @@ def make_handler(context):
                     else:
                         self.json(state.creatures().detail(template_id, query.get('map', ['all'])[0],
                                                            int(query.get('page', ['0'])[0])))
+                elif path == '/api/item-effects/catalog':
+                    from xyj_content.item_effects import skill_choices
+                    from xyj_content.particles import effect_choices
+                    particles, particle_error = [], ''
+                    try:
+                        particles = effect_choices(state.client)
+                    except ContentError:
+                        particle_error = '无法读取 Act/Effect.dat。请在设置中核对客户端资源目录。'
+                    self.json({'skills': skill_choices(state.loaded), 'particles': particles,
+                               'particle_error': particle_error, 'workspace_generation': generation})
+                elif path.startswith('/api/item-effects/particle/'):
+                    from xyj_content.particles import particle_preview
+                    effect_id = int(path.rsplit('/', 1)[1])
+                    self.json({**particle_preview(state.client, effect_id), 'workspace_generation': generation})
                 elif path.startswith('/api/item/'):
                     parts = path.strip('/').split('/')
                     if len(parts) == 3:
@@ -342,6 +359,9 @@ def make_handler(context):
                             model = item_model(state.client, record, display=True)
                             model['mode_label'] = '单件展示（落地外观）'
                             model['warnings'].insert(0, '这是该物品的落地展示外观，穿戴效果请切换人物穿戴。')
+                        if item_categories(record)['slot_mask'] & 12:
+                            from xyj_content.particles import weapon_anchors
+                            model['particle_anchors'] = weapon_anchors(model)
                         self.json(model)
                     else:
                         raise ContentError("预览方式无效。")
@@ -358,25 +378,23 @@ def make_handler(context):
                     texture = int(path.rsplit('/', 1)[1][:-4])
                     self.send_data(texture_png(state.client, texture), 'image/png')
                 else:
-                    allowed = {'/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js',
-                               '/creatures.js': 'creatures.js',
-                               '/creature-editor.js': 'creature-editor.js',
-                               '/model-editor.js':'model-editor.js', '/model-operations.js':'model-operations.js',
-                               '/model-viewport.js':'model-viewport.js',
-                               '/settings.js': 'settings.js',
-                               '/item-workflow.js': 'item-workflow.js',
-                               '/item-drops.js': 'item-drops.js',
-                               '/acquisition.js': 'acquisition.js',
-                               '/viewer.js': 'viewer.js', '/style.css': 'style.css',
-                               '/vendor/three.module.js': 'node_modules/three/build/three.module.js',
-                               '/vendor/three.core.js': 'node_modules/three/build/three.core.js',
-                               '/vendor/OrbitControls.js': 'node_modules/three/examples/jsm/controls/OrbitControls.js'}
-                    allowed['/vendor/TransformControls.js']='node_modules/three/examples/jsm/controls/TransformControls.js'
-                    if path not in allowed:
+                    editor = context.root / 'editor'
+                    if path in ('/', '/index.html'):
+                        file = editor / 'dist/index.html'
+                        if not file.is_file():
+                            self.json({'error': '请在项目根目录执行 npm --prefix editor ci 和 npm --prefix editor run build。'}, 503)
+                            return
+                    elif re.fullmatch(r'/workshop-assets/[\w-]+-[\w-]{8}\.(?:js|css)', path, flags=re.ASCII):
+                        file = editor / 'dist' / path[1:]
+                        if not file.is_file():
+                            self.json({'error': '静态资源不存在。'}, 404)
+                            return
+                    elif path == '/item-workflow.js':
+                        file = editor / 'item-workflow.js'
+                    else:
                         self.json({'error': '路径不存在。'}, 404)
                         return
-                    file = context.root / 'editor' / allowed[path]
-                    if not file.resolve().is_relative_to(context.root / 'editor'):
+                    if not file.resolve().is_relative_to(editor):
                         raise ContentError("静态资源链接越界。")
                     data = read_bytes(file)
                     kind = 'text/javascript' if file.suffix == '.js' else mimetypes.guess_type(file.name)[0] or 'application/octet-stream'
@@ -496,7 +514,8 @@ def make_handler(context):
                         raise ContentError("导出版本已过期，请刷新。")
                     from xyj_content.acquisition import has_acquisition
                     self.json(export_editor_patch(state.root, state.loaded, state.edits,
-                              acquisition=state.acquisition() if has_acquisition(state.edits) else None))
+                              acquisition=state.acquisition() if has_acquisition(state.edits) else None,
+                              effects_client=state.client))
                 else:
                     self.json({'error': '路径不存在。'}, 404)
     return Handler

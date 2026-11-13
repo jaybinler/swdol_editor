@@ -18,6 +18,7 @@ from .objects import encode_fixed_text, find_unique, view_record, without_text
 from .patch import PAYLOAD_PATHS, insertion_position
 from .taxonomy import item_categories
 from .item_properties import RESISTANCES, template_properties
+from .item_effects import EFFECT_FIELDS, skill_choices
 
 # SWDOL.exe 0x581900..0x581e7b: direct Object reads and Language label lookups.
 FIELDS = {
@@ -33,6 +34,7 @@ FIELDS = {
     "range": ("距离", 140, "h"), "delay": ("延迟", 144, "i"), "weight": ("重量", 172, "i"),
     "hp_recovery": ("体力回复", 130, "h"), "mp_recovery": ("灵力回复", 132, "h"),
     **{f"resist_{key}": (label, offset, "b") for key, label, offset in RESISTANCES},
+    **EFFECT_FIELDS,
 }
 
 
@@ -41,7 +43,7 @@ def field_schema() -> list[dict]:
     fields = []
     for key, (label, offset, fmt) in FIELDS.items():
         bits = struct.calcsize('<' + fmt) * 8
-        group = ('weapon' if key in ('damage', 'delay', 'range') else
+        group = ('effects' if key in EFFECT_FIELDS else 'weapon' if key in ('damage', 'delay', 'range') else
                  'resistances' if key.startswith('resist_') else
                  'recovery' if key.endswith('_recovery') else 'basic')
         fields.append({"key": key, "label": label, "offset": offset,
@@ -94,6 +96,7 @@ def validate_edits(loaded: Loaded, edits: list) -> list[dict]:
     if not isinstance(edits, list) or len(edits) > 200:
         raise ContentError("草稿必须是最多 200 个操作的列表。")
     seen, normalized = set(), []
+    skills = None
     ids = {struct.unpack_from('<I', r, 4)[0] for table in (loaded.client, loaded.server) for r in table.records}
     schema = {v['key']: v for v in field_schema()}
     for edit in edits:
@@ -118,6 +121,21 @@ def validate_edits(loaded: Loaded, edits: list) -> list[dict]:
         for key, value in values.items():
             if type(value) is not int or not schema[key]['min'] <= value <= schema[key]['max']:
                 raise ContentError(f"{schema[key]['label']} 超出整数范围。")
+            if key not in EFFECT_FIELDS or value == detail['stats'][key]:
+                continue
+            if key != 'active_skill' and not detail['slot_mask'] & 12:
+                raise ContentError(f"{schema[key]['label']} 仅适用于武器或副手。")
+            if key in ('active_skill', 'passive_skill') and value != -1:
+                if skills is None:
+                    skills = {row['id'] for row in skill_choices(loaded)}
+                if value not in skills:
+                    raise ContentError('请选择双端均存在的技能，或清除技能。')
+            if key == 'passive_chance' and not -1 <= value <= 99:
+                raise ContentError('释放几率阈值必须在 -1 至 99。')
+            if key == 'weapon_particle' and not 0 <= value <= 5000:
+                raise ContentError('武器粒子效果编号必须在 0 至 5000。')
+            if key == 'particle_speed' and not 0 <= value <= 100:
+                raise ContentError('粒子流速必须在 0 至 100。')
         operation = {**edit, 'stats': dict(values)}
         if 'acquisition' in edit:
             from .acquisition import normalize_acquisition
@@ -245,7 +263,7 @@ def verify_editor_patch(root: Path, directory: Path) -> dict:
             'original_language_entries_preserved': True, 'gameplay_verified': False}
 
 
-def export_editor_patch(root: Path, loaded: Loaded, edits: list, *, acquisition=None) -> dict:
+def export_editor_patch(root: Path, loaded: Loaded, edits: list, *, acquisition=None, effects_client=None) -> dict:
     """Publish a new verified patch below output/editor/patches, including rollback baselines."""
     if not edits:
         raise ContentError("草稿为空，请先暂存道具修改。")
@@ -253,6 +271,8 @@ def export_editor_patch(root: Path, loaded: Loaded, edits: list, *, acquisition=
         if read_bytes(path) != blob:
             raise ContentError("源文件在编辑期间发生变化，请重启编辑器重新加载。")
     blobs, changes = prepare_edits(loaded, edits)
+    from .particles import validate_effect_references
+    validate_effect_references(loaded, edits, effects_client or loaded.paths.client.parent.parent)
     from .acquisition import build_script_payloads, touched_scripts
     script_sources = acquisition.export_sources(edits) if acquisition is not None else {}
     if touched_scripts(edits) and acquisition is None:
